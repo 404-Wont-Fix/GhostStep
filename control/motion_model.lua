@@ -28,7 +28,10 @@ function Motion.observe(state,frame,terrain)
     local err=p.position:Distance(prev.nextPos)
     local velocityError=dt==1 and prev.nextVel and p.velocity:Distance(prev.nextVel) or nil
     local issued=prev.active and state.control.hookSeen==true
-    state.feedback={decisionId=prev.id,dt=dt,error=err,progress=moved,expected=expected,hookSeen=issued,velocityError=velocityError}
+    state.feedback={decisionId=prev.id,dt=dt,error=err,progress=moved,expected=expected,hookSeen=issued,velocityError=velocityError,
+        deltaX=p.position.X-prev.position.X,deltaY=p.position.Y-prev.position.Y,
+        commandX=prev.input.X,commandY=prev.input.Y,commandActive=prev.active,
+        predictedVelocityX=prev.nextVel and prev.nextVel.X,predictedVelocityY=prev.nextVel and prev.nextVel.Y}
     if dt~=1 then m.pending=nil; m.blockedFrames=0; return end
     local blocked=issued and expected>0.5 and moved<math.max(0.15,expected*0.15)
     m.blockedFrames=blocked and m.blockedFrames+1 or 0

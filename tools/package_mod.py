@@ -37,7 +37,8 @@ def main():
     lines.append('}')
     build = ROOT/'config/build.lua'
     build.write_text('\n'.join(lines)+'\n', encoding='utf-8')
-    files = runtime_files()+[build, ROOT/'IMPLEMENTATION.md']
+    files = runtime_files()+[build, ROOT/'IMPLEMENTATION.md',
+                           ROOT/'tools/analyze_replay.py', ROOT/'tools/REPLAY_ANALYSIS.md']
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(args.output, 'w', zipfile.ZIP_DEFLATED) as archive:
         for path in files:

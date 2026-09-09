@@ -71,6 +71,7 @@ function Snapshot.finalize(snap, state, detailLevel, hazards, config)
     snap.commandValid = control.active
     snap.reason = decision.reason
     snap.feedback = state.feedback
+    snap.episodeId=state.avoidanceEpisode and state.avoidanceEpisode.episodeId
     snap.metrics = decision.metrics
     snap.cx, snap.cy = control.direction.X, control.direction.Y
     snap.perfPrevious = state.profiler.previous

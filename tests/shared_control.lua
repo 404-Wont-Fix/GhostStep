@@ -169,6 +169,22 @@ test('closed loop avoids a chasing enemy that moves before the player',function(
     assert(closest>23,'contact in enemy-first simulation: '..closest)
     assert(pos:Length()>20,'standing protection must actually move')
 end)
+test('avoidance summary links previous command movement without counting gaps',function()
+    local D=require('control/avoidance_diagnostics');local st=state();local events={}
+    local recorder={event=function(_,e) events[#events+1]=e end}
+    st.logicTick=1;st.control.active=true;st.control.direction=Vector(1,0)
+    st.player.position=Vector(0,0);st.decision.reason='safe_evasion'
+    D.update(st,1,recorder)
+    st.logicTick=2;st.feedback={decisionId=1,dt=1,progress=5,hookSeen=true}
+    st.player.position=Vector(3,4);st.control.active=false
+    D.update(st,2,recorder)
+    assert(events[2].ev=='avoidance_end' and events[2].pathDistance==5 and events[2].netDisplacement==5)
+    assert(events[2].hookSteps==1 and events[2].commands==1)
+    st.control.active=true;D.update(st,3,recorder)
+    st.feedback=nil;st.player.position=Vector(500,500);st.control.active=false
+    D.update(st,20,recorder)
+    assert(events[4].incomplete and events[4].pathDistance==0)
+end)
 test('safe player intent is untouched even in a dense distant cluster',function()
     local st=state(); st.player.inputDir=Vector(-1,0)
     local hz={}; for i=1,80 do hz[i]=shot(200+i,80,0,0) end
@@ -180,6 +196,8 @@ test('standing incoming shot is avoided with full movement input',function()
     assert(u and math.abs(u.Y)>0.1,'must sidestep')
     assert(u:Length()>0.99,'dodge must use normal movement strength')
     assert(st.decision.metrics.selectedRisk<st.decision.metrics.nominalRisk)
+    assert(st.decision.metrics.triggerKind=='projectile' and st.decision.metrics.triggerId=='p:1')
+    assert(st.decision.metrics.plannedDisplacement>0 and st.decision.metrics.selectedSafe)
 end)
 test('recorded post-update movement integrates old velocity before new input',function()
     -- 附件 frame 6987 -> 6988：位置增量为 6987 的速度。

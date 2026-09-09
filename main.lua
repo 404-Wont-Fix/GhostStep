@@ -28,6 +28,7 @@ local FutureMotion      = require("threat/future_motion")
 local Pipeline          = require("decision/pipeline")
 local InputReader       = require("control/input_reader")
 local Motion = require("control/motion_model")
+local AvoidanceDiagnostics=require("control/avoidance_diagnostics")
 local EventBuffer = require("recording/event_buffer")
 local InputWriter       = require("control/input_writer")
 local Overlay           = require("render/overlay")
@@ -203,6 +204,8 @@ local function rebuildTerrain()
 end
 
 local function onNewRoom()
+    if state.avoidanceEpisode then state.avoidanceEpisode.incomplete=true end
+    AvoidanceDiagnostics.finish(state,sessionRecorder,"room_change")
     Runtime.onNewRoom(state)
     state.forecastMatched={}
     Terrain.invalidate(terrain)
@@ -241,6 +244,8 @@ end
 -- ===== 死亡回放（MC_POST_UPDATE 检测，Rep+ MC_POST_PLAYER_UPDATE 在死后停发）=====
 local deathHandled = false
 local function onPlayerDeath()
+    if state.avoidanceEpisode then state.avoidanceEpisode.incomplete=true end
+    AvoidanceDiagnostics.finish(state,sessionRecorder,"death")
     if not Config.deathReplayEnabled then return end
     if not Config.recordingEnabled then
         Isaac.DebugString("[GhostStep3] 死亡回放跳过: 录制功能未开启 (MCM→GhostStep3→录制)")
@@ -274,7 +279,11 @@ local function onPlayerUpdate(player)
     end
     player=realPlayer
     if Config.recordingEnabled and not sessionRecorder.file then startRecording()
-    elseif not Config.recordingEnabled and sessionRecorder.file then sessionRecorder:closeFile() end
+    elseif not Config.recordingEnabled and sessionRecorder.file then
+        if state.avoidanceEpisode then state.avoidanceEpisode.incomplete=true end
+        AvoidanceDiagnostics.finish(state,sessionRecorder,"recording_disabled")
+        sessionRecorder:closeFile()
+    end
     if player:IsDead() then Runtime.suspendThreat(state); return end
     local stages={}
     state.profiler.stages=stages
@@ -340,6 +349,8 @@ local function onPlayerUpdate(player)
         Runtime.suspendThreat(state)
     end
     stages.decisionMs=state.decision.usedBudgetMs
+    if Config.recordingEnabled then AvoidanceDiagnostics.update(state,frame,sessionRecorder)
+    else state.avoidanceEpisode=nil end
     Motion.commit(state,frame)
     if (state.motion.blockedFrames==Config.stuckFrames or (state.feedback and state.feedback.error>8))
         and frame-lastDiagnosticFrame>=30 then
@@ -418,7 +429,7 @@ local function onEntityTakeDmg(entity,amount,flags,source)
     state.damageSequence=(state.damageSequence or 0)+1
     local e=source and source.Entity
     local ev={ev="damage_attempt",attemptId=state.damageSequence,frame=Isaac.GetFrameCount(),
-        decisionId=state.logicTick,dmg=tonumber(amount),flags=tonumber(flags),phase="pre_damage",
+        decisionId=state.logicTick,episodeId=state.avoidanceEpisode and state.avoidanceEpisode.episodeId,dmg=tonumber(amount),flags=tonumber(flags),phase="pre_damage",
         srcT=source and source.Type,srcV=source and source.Variant,
         sourceIndex=e and e.Index,sourceSeed=e and e.InitSeed,
         sourceX=e and e.Position and e.Position.X,sourceY=e and e.Position and e.Position.Y,
@@ -517,10 +528,13 @@ end)
 safeAddCallback(ModCallbacks.MC_POST_GAME_STARTED, function()
     -- 开局重载配置（上一局存档点写入的数据此时可读）并立即回存（MCM OnGameStarted 同款）
     SafeCall.call("gameStarted", function()
+        if state.avoidanceEpisode then state.avoidanceEpisode.incomplete=true end
+        AvoidanceDiagnostics.finish(state,sessionRecorder,"new_game")
         MCM.loadSettings()
         MCM.saveSettings()
         state.lastPlayerUpdate=nil; state.logicTick=0; state.player.hp=nil
         state.pendingDamage=nil; state.damageSequence=0
+        state.avoidanceEpisode=nil;state.avoidanceSequence=0
         state.profiler.previous=nil
         sessionRecorder.frame=Isaac.GetFrameCount();sessionRecorder.tick=0
         Runtime.onNewRoom(state); eventBuffer:reset(); ringBuffer:clear()
@@ -562,6 +576,8 @@ end)
 
 safeAddCallback(ModCallbacks.MC_PRE_GAME_EXIT, function()
     SafeCall.call("preExit", function()
+        if state.avoidanceEpisode then state.avoidanceEpisode.incomplete=true end
+        AvoidanceDiagnostics.finish(state,sessionRecorder,"game_exit")
         MCM.saveSettings()
         sessionRecorder:closeFile()
     end)

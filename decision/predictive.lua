@@ -9,7 +9,8 @@ local function distance(a,b) return math.sqrt((a.X-b.X)^2+(a.Y-b.Y)^2) end
 local function traceRow(c)
     return {id=c.id,x=c.u.X,y=c.u.Y,duration=c.duration,risk=c.risk,cost=c.cost,
         hit=c.hit,hitId=c.hitId,terrain=c.blocked,complete=c.complete,clearance=c.clearance,
-        exposure=c.exposure,exitTime=c.exitTime,terminalRisk=c.terminalRisk,terrainRejected=c.terrainRejected}
+        exposure=c.exposure,exitTime=c.exitTime,terminalRisk=c.terminalRisk,terrainRejected=c.terrainRejected,
+        endX=c.endX,endY=c.endY,plannedDisplacement=c.plannedDisplacement}
 end
 function Planner.run(state,deps,frame)
     local cfg,p,d=deps.config,state.player,state.decision
@@ -91,6 +92,8 @@ function Planner.run(state,deps,frame)
             points[t+1]={x,y}
             minX,maxX,minY,maxY=math.min(minX,x),math.max(maxX,x),math.min(minY,y),math.max(maxY,y)
         end
+        c.endX,c.endY=x,y
+        c.plannedDisplacement=math.sqrt((x-p.position.X)^2+(y-p.position.Y)^2)
         local r=p.radius+margin
         local inInitial=false
         for i=1,#hazards do
@@ -162,6 +165,15 @@ function Planner.run(state,deps,frame)
         d.degraded=metrics.denseHorizon or not metrics.complete or Isaac.GetTime()>=deadline
         d.usedBudgetMs=Isaac.GetTime()-begin
         metrics.selectedRisk=best.risk; metrics.selectedId=best.id
+        metrics.triggerId=base.hitEntry and base.hitEntry.id
+        metrics.triggerKind=base.hitEntry and base.hitEntry.kind or (initialDepth>0 and "terrain" or nil)
+        metrics.initialPenetration=initialDepth
+        metrics.riskImprovement=base.risk-best.risk
+        metrics.selectedSafe=best.complete and not best.hit and not best.blocked
+        metrics.triggerX=base.hitEntry and base.hitEntry.pos.X
+        metrics.triggerY=base.hitEntry and base.hitEntry.pos.Y
+        metrics.selectedEndX,metrics.selectedEndY=best.endX,best.endY
+        metrics.plannedDisplacement=best.plannedDisplacement
         metrics.selectedDuration=best.duration; metrics.selectedAmplitude=best.u:Length()
         metrics.selectedHit=best.hit; metrics.stuckFrames=m.blockedFrames
         metrics.sensorOmitted=deps.omittedCount or 0
