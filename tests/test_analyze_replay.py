@@ -41,3 +41,32 @@ class ReplayTests(unittest.TestCase):
             reports=[m.analyze(p) for p in sorted(Path(tmp).glob('*.jsonl'))]
             self.assertEqual([r['header']['seed'] for r in reports],['a','b'])
             self.assertTrue(all(not r['observedSegments'] for r in reports))
+
+    def test_dodge_dir8_histogram(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            p=Path(tmp)/'trace.jsonl'
+            # 3次向右(dx=1,dy=0), 1次向左上(dx=-0.7,dy=-0.7)
+            rows=[
+                {'ev':'session_start','seq':1,'seed':'d8'},
+                {'seq':2,'frame':1,'tick':1,'decisionId':1,'room':1,'px':0,'py':0,'active':True,'cx':1,'cy':0,'dx':1,'dy':0},
+                {'seq':3,'frame':2,'tick':2,'decisionId':2,'room':1,'px':1,'py':0,'active':True,'cx':1,'cy':0,'dx':1,'dy':0},
+                {'seq':4,'frame':3,'tick':3,'decisionId':3,'room':1,'px':2,'py':0,'active':True,'cx':1,'cy':0,'dx':1,'dy':0},
+                {'seq':5,'frame':4,'tick':4,'decisionId':4,'room':1,'px':3,'py':0,'active':True,'cx':-0.7,'cy':-0.7,'dx':-0.7,'dy':-0.7},
+            ]
+            p.write_text('\n'.join(json.dumps(r) for r in rows)+'\n',encoding='utf-8')
+            r=m.analyze(p)
+            d8=r['dodgeDir8']
+            self.assertEqual(d8.get('右',0),3)
+            self.assertEqual(d8.get('左上',0),1)
+            self.assertEqual(sum(d8.values()),4)
+            # 验证 decisions.csv 包含 dodgeDir8 列
+            m.write_reports([r],Path(tmp)/'out')
+            import csv
+            with open(Path(tmp)/'out'/'decisions.csv',encoding='utf-8-sig') as f:
+                reader=csv.DictReader(f)
+                rows_csv=list(reader)
+            self.assertIn('dodgeDir8',rows_csv[0])
+            self.assertIn('dodgeDirX',rows_csv[0])
+            active_rows=[r for r in rows_csv if r['active']=='True']
+            self.assertEqual(active_rows[0]['dodgeDir8'],'右')
+            self.assertEqual(active_rows[3]['dodgeDir8'],'左上')

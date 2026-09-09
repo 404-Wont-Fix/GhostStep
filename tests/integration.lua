@@ -21,7 +21,8 @@ Game=function() return {GetRoom=function() return room end,GetLevel=function() r
     GetNumPlayers=function() return 1 end,GetSeeds=function() return {GetStartSeed=function() return 123 end} end} end
 local left,toggle=0,false
 Input.GetActionValue=function(action) return action==ButtonAction.ACTION_LEFT and left or 0 end
-Input.IsButtonTriggered=function() local v=toggle;toggle=false;return v end
+Input.IsButtonPressed=function() return toggle end
+Input.IsButtonTriggered=function() return false end
 local oldIO=io;io=nil -- 测试不向真实 recordings 目录写入。
 local before=#SMOKE.logs
 require('main')
@@ -41,7 +42,7 @@ callbacks[ModCallbacks.MC_POST_PLAYER_UPDATE](mod,player)
 assert(not st.userEnabled and not st.control.active and st.control.weight==0 and st.player.inputDir.X==-1)
 assert(callbacks[ModCallbacks.MC_INPUT_ACTION](mod,player,InputHook.GET_ACTION_VALUE,ButtonAction.ACTION_LEFT)==nil)
 callbacks[ModCallbacks.MC_POST_NEW_ROOM](mod)
-SMOKE.frameCount=3;callbacks[ModCallbacks.MC_POST_PLAYER_UPDATE](mod,player)
+toggle=false;SMOKE.frameCount=3;callbacks[ModCallbacks.MC_POST_PLAYER_UPDATE](mod,player)
 assert(not st.userEnabled,'room transition must not re-enable protection')
 toggle=true;left=0;SMOKE.frameCount=4
 callbacks[ModCallbacks.MC_POST_PLAYER_UPDATE](mod,player)

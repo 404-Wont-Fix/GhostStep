@@ -30,10 +30,23 @@ def summary(hist):
                 maximum=max(hist), over33ms=sum(c for v,c in hist.items() if v>33))
 
 
+DIR8_NAMES = ['右', '右下', '下', '左下', '左', '左上', '上', '右上']
+
+def dir8_index(dx, dy):
+    """atan2(dy,dx) → 8方向索引（0=右,1=右下,…7=右上）。零向量返回 None。"""
+    if abs(dx) < 1e-6 and abs(dy) < 1e-6:
+        return None
+    angle = math.atan2(dy, dx)  # -π..π, 0=右
+    # 转到 0..2π，每45°一档，0=右,1=右下,2=下,…7=右上
+    deg = math.degrees(angle) % 360
+    return int(((deg + 22.5) % 360) // 45)
+
+
 def analyze(path):
     events, reasons, counts = (collections.Counter() for _ in range(3))
     stages = collections.defaultdict(collections.Counter)
     amplitudes = collections.Counter()
+    dodge_dir8 = collections.Counter()  # 8方向闪避直方图
     damages, contexts, io_events, episodes, segments, warnings = {}, {}, [], [], [], []
     previous = segment = header = None
     last_seq = None
@@ -121,6 +134,9 @@ def analyze(path):
         if row.get('active'):
             counts['active_snapshots'] += 1
             amplitudes[round(math.hypot(row.get('cx',0),row.get('cy',0)),2)] += 1
+            d8 = dir8_index(row.get('dx', 0), row.get('dy', 0))
+            if d8 is not None:
+                dodge_dir8[d8] += 1
             if segment is None:
                 segment=dict(startFrame=row['frame'],endFrame=row['frame'],room=row.get('room'),
                     startX=row['px'],startY=row['py'],endX=row['px'],endY=row['py'],
@@ -152,6 +168,7 @@ def analyze(path):
         d['classification']='observed_hp_loss' if 'observedHpLoss' in d else 'attempt_only_or_death'
     return dict(file=str(Path(path).resolve()),header=header,headers=headers,counts=counts,events=events,reasons=reasons,
                 firstSnapshotFrame=first_frame,lastSnapshotFrame=last_frame,amplitudes=amplitudes,
+                dodgeDir8={DIR8_NAMES[k]: v for k, v in sorted(dodge_dir8.items())},
                 stages={k:summary(v) for k,v in stages.items()},ioPauseEvents=io_events,
                 damage=list(damages.values()),recordedEpisodes=episodes,observedSegments=segments,warnings=warnings,
                 limitations=['实际位移含玩家惯性、外力、地形影响，不代表 mod 的因果贡献。',
@@ -186,7 +203,8 @@ def write_reports(reports, output):
                 writer.writerow(dict(d,file=r['file'],wallDistance=c.get('wallDistance'),evaluated=m.get('evaluated'),selectedRisk=m.get('selectedRisk')))
     # 第二遍流式导出逐决策数据，不把所有帧驻留内存。
     with (output/'decisions.csv').open('w',encoding='utf-8-sig',newline='') as f:
-        fields=['file','frame','decisionId','episodeId','reason','active','rawX','rawY','commandX','commandY','angleDegrees',
+        fields=['file','frame','decisionId','episodeId','reason','active','rawX','rawY','commandX','commandY',
+                'dodgeDirX','dodgeDirY','dodgeDir8','angleDegrees',
                 'triggerId','triggerKind','nominalHit','selectedHit','plannedDisplacement','selectedEndX','selectedEndY',
                 'distanceForDecision','observedDistance','observedDeltaX','observedDeltaY','hookSeen','velocityError']
         writer=csv.DictWriter(f,fieldnames=fields);writer.writeheader()
@@ -201,9 +219,12 @@ def write_reports(reports, output):
                 m=s.get('metrics',{});fb=s.get('feedback',{})
                 valid=fb.get('dt')==1
                 cx,cy=s.get('cx',0),s.get('cy',0)
+                ddx,ddy=s.get('dx',0),s.get('dy',0)
+                d8i=dir8_index(ddx,ddy)
                 writer.writerow(dict(file=report['file'],frame=s.get('frame'),decisionId=s.get('decisionId'),
                     episodeId=s.get('episodeId'),reason=s.get('reason'),active=s.get('active'),
                     rawX=s.get('ix'),rawY=s.get('iy'),commandX=cx,commandY=cy,
+                    dodgeDirX=ddx,dodgeDirY=ddy,dodgeDir8=DIR8_NAMES[d8i] if d8i is not None else '',
                     angleDegrees=math.degrees(math.atan2(cy,cx)) if math.hypot(cx,cy)>.01 else None,
                     triggerId=m.get('triggerId'),triggerKind=m.get('triggerKind'),nominalHit=m.get('nominalHit'),selectedHit=m.get('selectedHit'),
                     plannedDisplacement=m.get('plannedDisplacement'),selectedEndX=m.get('selectedEndX'),selectedEndY=m.get('selectedEndY'),
@@ -217,7 +238,18 @@ def write_reports(reports, output):
                   f"快照 {c.get('snapshots',0)} 条，范围 {r['firstSnapshotFrame']}–{r['lastSnapshotFrame']}；缺失序号 {c.get('missing_sequences',0)}。",
                   f"接管快照 {c.get('active_snapshots',0)} 条；低位移步骤 {c.get('low_progress_steps',0)}，其中近墙 {c.get('low_progress_near_wall_steps',0)}。",
                   f"预算失败快照 {c.get('budget_failure_snapshots',0)}；观测避让片段 {len(r['observedSegments'])}，已保存避让结束事件 {len(r['recordedEpisodes'])}。",'',
-                  f"原因分布：`{json.dumps(r['reasons'],ensure_ascii=False)}`",'', '| 伤害回调 | 帧 | 来源 | 当时原因 | 预测首碰撞 | 墙距 | 已评估 |','|---|---:|---|---|---:|---:|---:|']
+                  f"原因分布：`{json.dumps(r['reasons'],ensure_ascii=False)}`",'']
+        d8 = r.get('dodgeDir8', {})
+        if d8:
+            total = sum(d8.values())
+            lines += ['### 闪避方向分布（AI dodgeDir，8方向）','', '| 方向 | 次数 | 占比 |','|---|---:|---:|']
+            for name in DIR8_NAMES:
+                cnt = d8.get(name, 0)
+                pct = f'{cnt/total*100:.1f}%' if total else '-'
+                lines.append(f'| {name} | {cnt} | {pct} |')
+            lines.append(f'| **合计** | **{total}** | **100%** |')
+            lines.append('')
+        lines += ['| 伤害回调 | 帧 | 来源 | 当时原因 | 预测首碰撞 | 墙距 | 已评估 |','|---|---:|---|---|---:|---:|---:|']
         for d in r['damage']:
             ctx=d.get('context',{})
             lines.append(f"| {d.get('attemptId','?')} | {d.get('frame','?')} | {d.get('srcT','?')}.{d.get('srcV','?')} | {d.get('reason','?')} | {d.get('predictedHit','?')} | {ctx.get('wallDistance','?')} | {ctx.get('metrics',{}).get('evaluated','?')} |")

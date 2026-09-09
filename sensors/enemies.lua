@@ -39,10 +39,15 @@ local function isContactThreat(e)
     end
 
     -- 特殊类型：火堆——静态接触伤害源。不走 ToNPC/IsActiveEnemy 通道
-    -- （火堆可能两者都不满足），只查 IsDead；radius 在采集处放大
+    -- （火堆可能两者都不满足）；radius 在采集处放大
+    -- 熄灭火堆（State>=2 或 HitPoints<=0）无接触伤害，必须排除
     if e.Type == TYPE_FIREPLACE then
         local okDead, dead = pcall(function() return e:IsDead() end)
         if okDead and dead then return false end
+        local okState, state = pcall(function() return e.State end)
+        if okState and state and state >= 2 then return false end
+        local okHp, hp = pcall(function() return e.HitPoints end)
+        if okHp and hp and hp <= 0 then return false end
         return "fireplace"
     end
 

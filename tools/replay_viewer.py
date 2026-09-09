@@ -17,6 +17,7 @@
 
 import argparse
 import json
+import math
 import sys
 from pathlib import Path
 
@@ -349,13 +350,12 @@ def render_frame(rec, requested):
     # 候选方向刻度（60px 参考圆上，分数越优刻度越大）
     cand = rec.get("cand")
     if cand:
-        import math as _m
         scores = [c["s"] for c in cand]
         lo, hi = min(scores), max(scores)
         for c in cand:
-            a = _m.radians(c["a"])
+            a = math.radians(c["a"])
             size = 14 if hi == lo else 14 + 26 * (1 - (c["s"] - lo) / (hi - lo))
-            ax.scatter([_m.cos(a) * 60], [_m.sin(a) * 60], s=size, c=MUTED,
+            ax.scatter([math.cos(a) * 60], [math.sin(a) * 60], s=size, c=MUTED,
                        marker="|", zorder=2)
         best = rec.get("bestScore")
         legend_handles.append(Line2D([0], [0], color=MUTED, marker="|", linestyle="",
@@ -476,6 +476,23 @@ def print_stats(frames, events):
     if wall:
         print(f"  墙距: 最近={min(wall):.0f}px 均值={sum(wall) / len(wall):.0f}px "
               f"(<60贴墙帧={sum(1 for w in wall if w < 60)})")
+
+    # 闪避方向8方向分布
+    DIR8 = ['右', '右下', '下', '左下', '左', '左上', '上', '右上']
+    dir_counts = [0] * 8
+    for f in frames:
+        ddx, ddy = f.get("dx") or 0, f.get("dy") or 0
+        if abs(ddx) < 1e-6 and abs(ddy) < 1e-6:
+            continue
+        idx = int((math.degrees(math.atan2(ddy, ddx)) % 360 + 22.5) % 360 // 45)
+        dir_counts[idx] += 1
+    dir_total = sum(dir_counts)
+    if dir_total:
+        print(f"  闪避方向分布 ({dir_total}次):")
+        for i, name in enumerate(DIR8):
+            cnt = dir_counts[i]
+            bar = '█' * max(1, round(cnt / max(dir_counts) * 12)) if cnt else ''
+            print(f"    {name:>4} {cnt:>4} ({cnt/dir_total*100:5.1f}%) {bar}")
 
     # 受击归因分布（本会话 hit 事件聚合；无 kind 字段的旧录制计 "?"）
     kinds = {}

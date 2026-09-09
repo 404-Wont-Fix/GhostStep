@@ -262,6 +262,8 @@ local function onPlayerDeath()
 end
 
 -- ===== 主更新（MC_POST_PLAYER_UPDATE, 30fps）=====
+-- ALT开关上升沿追踪（可靠工作于任意MC回调）
+local prevToggleKeyState = false
 local onHpLost -- 前向声明（HP 轮询受伤兜底，定义见下方受伤诊断段）
 
 
@@ -318,12 +320,16 @@ local function onPlayerUpdate(player)
     local okInput,raw=pcall(InputReader.readMoveVector,state.player.controllerIndex)
     state.control.readingRaw=false
     state.player.inputDir=okInput and raw or Vector(0,0)
-    if Input.IsButtonTriggered(Config.toggleKey,0) then
+    -- ALT 开关：上升沿检测（IsButtonTriggered 在 MC_POST_PLAYER_UPDATE 不可靠，
+    -- Repentance+ 需用 IsButtonPressed + 边缘检测才能可靠捕获按键）
+    local keyDown = Input.IsButtonPressed(Config.toggleKey, 0)
+    if keyDown and not prevToggleKeyState then
         state.userEnabled=not state.userEnabled
         Runtime.suspendThreat(state)
         sessionRecorder:event({ev="toggle",on=state.userEnabled,frame=frame})
         state.statusToastUntil=state.renderCount+90
     end
+    prevToggleKeyState = keyDown
     local combat=isCombat(); state.inCombat=combat
     if combat~=wasCombat then wasCombat=combat; registry:onCombatChanged() end
     local hz=getHazards(frame)
