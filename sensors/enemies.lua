@@ -18,7 +18,7 @@ local TYPE_FIREPLACE = 33         -- 火堆：静态接触伤害，火焰范围 
 -- 火堆火焰伤害半径（像素，经验值）：火堆实际烫伤范围约为 Size 的 2.5 倍，
 -- 用 entity.Size 判定会漏（实测 2026-09-08：站视觉火焰内 hit=-1 被磨死）
 local FIREPLACE_RADIUS_MIN = 30
-local FIREPLACE_RADIUS_SCALE = 2.5
+local FIREPLACE_RADIUS_SCALE = 2.0
 
 --- 安全读取动画名称（小写）
 local function safeAnimLower(entity)

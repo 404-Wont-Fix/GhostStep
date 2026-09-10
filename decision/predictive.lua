@@ -148,8 +148,24 @@ function Planner.run(state,deps,frame)
                 enemyCost=enemyCost+math.max(0,1-dist/80)
             end
         end
+        local spikeCost=0
+        if terrain.valid then
+            local left,top=terrain.topLeft.X,terrain.topLeft.Y
+            local cx,cy=math.floor((x-left)/40),math.floor((y-top)/40)
+            for dy=-1,1 do for dx=-1,1 do
+                local gx,gy=cx+dx,cy+dy
+                if gx>=0 and gy>=0 and gx<terrain.sizeX and gy<terrain.sizeY then
+                    local cell=terrain.grid[gy*terrain.sizeX+gx+1]
+                    if cell and cell.danger=="spike" then
+                        local sx,sy=left+gx*40+20,top+gy*40+20
+                        local dist=math.sqrt((x-sx)^2+(y-sy)^2)-p.radius
+                        spikeCost=spikeCost+math.max(0,1-dist/80)
+                    end
+                end
+            end end
+        end
         c.cost=deviation*(cfg.intentPenalty or 3)/horizon
-            +smooth*(cfg.smoothPenalty or 0.2)+enemyCost*0.06-exits*0.025
+            +smooth*(cfg.smoothPenalty or 0.2)+enemyCost*0.06+spikeCost*0.15-exits*0.025
         metrics.evaluated=metrics.evaluated+1
         rows[#rows+1]=traceRow(c)
         return c

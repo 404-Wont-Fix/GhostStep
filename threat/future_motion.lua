@@ -179,6 +179,13 @@ function FutureMotion.pos(entry, t, frame)
                 circle.cy + circle.r * math.sin(ang)
             )
         end
+        -- 抛物线弹幕（爆炸弹丸等：2D阴影先减速再加速，恒定加速度）
+        if entry.history and entry.historyCount and entry.historyCount >= 3 then
+            local Predict = require("threat/projectile_predict")
+            if Predict.isParabolic(entry) then
+                return Predict.predictParabolicPos(entry, t)
+            end
+        end
         -- 追踪型弹幕
         if entry.history and entry.historyCount and entry.historyCount >= 3 then
             local Predict = require("threat/projectile_predict")

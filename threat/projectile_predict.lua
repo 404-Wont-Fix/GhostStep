@@ -174,7 +174,97 @@ function Predict.timeToHitArc(entry, playerPos, playerVel, playerRadius, horizon
 end
 
 ---------------------------------------------------------------
--- Phase 3.5: 墙壁截断验证（已接线 hazard_query）
+-- Phase 2.2: 抛物线弹幕检测 + 预测
+-- 以撒中部分弹幕（爆炸弹丸等 ENTITY_PROJECTILE 变体）沿抛物线飞行：
+-- 2D 阴影位置先减速（上升）再加速（下落），加速度近似恒定（重力投影）。
+-- 三点圆拟合不适用（抛物线不是圆弧），直线外推误差大。
+---------------------------------------------------------------
+
+--- 恒定加速度阈值（像素/帧²）：低于此视为直线/噪声
+local PARABOLIC_ACCEL_THRESHOLD = 0.3
+
+--- 检测抛物线运动：二阶位置差分呈恒定加速度，且加速度方向与速度变化一致
+--- 优先于圆弧检测：抛物线局部可近似圆弧，但物理特征（恒定加速度方向）更可靠
+function Predict.isParabolic(entry)
+    if not entry.history or (entry.historyCount or 0) < 3 then return false end
+    local p0 = History.recent(entry,2)
+    local p1 = History.recent(entry,1)
+    local p2 = History.recent(entry,0)
+    local dt01 = p1.frame - p0.frame
+    local dt12 = p2.frame - p1.frame
+    if dt01 <= 0 or dt12 <= 0 then return false end
+    -- 二阶差分 = 恒定加速度（重力在2D平面的投影）
+    local ax = (p2.pos.X - p1.pos.X) / dt12 - (p1.pos.X - p0.pos.X) / dt01
+    local ay = (p2.pos.Y - p1.pos.Y) / dt12 - (p1.pos.Y - p0.pos.Y) / dt01
+    local accelSq = ax * ax + ay * ay
+    if accelSq < PARABOLIC_ACCEL_THRESHOLD * PARABOLIC_ACCEL_THRESHOLD then return false end
+    -- 验证：加速度方向应与连续速度变化方向一致（排除随机噪声）
+    local dvx1 = (p1.pos.X - p0.pos.X) / dt01
+    local dvy1 = (p1.pos.Y - p0.pos.Y) / dt01
+    local dvx2 = (p2.pos.X - p1.pos.X) / dt12
+    local dvy2 = (p2.pos.Y - p1.pos.Y) / dt12
+    local ddvx, ddvy = dvx2 - dvx1, dvy2 - dvy1
+    return (ax * ddvx + ay * ddvy) > 0
+end
+
+--- 抛物线位置预测：pos + vel*t + 0.5*accel*t²
+function Predict.predictParabolicPos(entry, t)
+    if not entry.history or (entry.historyCount or 0) < 3 then
+        return entry.pos + entry.vel * t
+    end
+    local p0 = History.recent(entry,2)
+    local p1 = History.recent(entry,1)
+    local p2 = History.recent(entry,0)
+    local dt01 = p1.frame - p0.frame
+    local dt12 = p2.frame - p1.frame
+    if dt01 <= 0 or dt12 <= 0 then return entry.pos + entry.vel * t end
+    local ax = (p2.pos.X - p1.pos.X) / dt12 - (p1.pos.X - p0.pos.X) / dt01
+    local ay = (p2.pos.Y - p1.pos.Y) / dt12 - (p1.pos.Y - p0.pos.Y) / dt01
+    return Vector(
+        entry.pos.X + entry.vel.X * t + 0.5 * ax * t * t,
+        entry.pos.Y + entry.vel.Y * t + 0.5 * ay * t * t
+    )
+end
+
+--- 抛物线碰撞检测：逐步采样（步长2帧），返回首帧命中或 nil
+--- 同时检测速度反向（抛物线最高点后下落），超过最高点+余量后截断
+function Predict.timeToHitParabolic(entry, playerPos, playerVel, playerRadius, horizon)
+    if not entry.history or (entry.historyCount or 0) < 3 then
+        return Predict.timeToHitMoving(entry, playerPos, playerVel, playerRadius, horizon)
+    end
+    local p0 = History.recent(entry,2)
+    local p1 = History.recent(entry,1)
+    local p2 = History.recent(entry,0)
+    local dt01 = p1.frame - p0.frame
+    local dt12 = p2.frame - p1.frame
+    if dt01 <= 0 or dt12 <= 0 then
+        return Predict.timeToHitMoving(entry, playerPos, playerVel, playerRadius, horizon)
+    end
+    local ax = (p2.pos.X - p1.pos.X) / dt12 - (p1.pos.X - p0.pos.X) / dt01
+    local ay = (p2.pos.Y - p1.pos.Y) / dt12 - (p1.pos.Y - p0.pos.Y) / dt01
+    local accelSq = ax * ax + ay * ay
+    if accelSq < 0.0001 then
+        return Predict.timeToHitMoving(entry, playerPos, playerVel, playerRadius, horizon)
+    end
+    -- 估算最高点帧（速度在加速度方向投影为0）
+    local vDotA = entry.vel.X * ax + entry.vel.Y * ay
+    local tApex = -vDotA / accelSq
+    -- 最高点后给20帧余量（下落阶段仍可能命中），但不超过 horizon
+    local maxT = math.min(horizon, math.max(horizon, math.ceil(tApex + 20)))
+    local combined = entry.radius + playerRadius
+    local combinedSq = combined * combined
+    for t = 0, maxT, 2 do
+        local ex = entry.pos.X + entry.vel.X * t + 0.5 * ax * t * t
+        local ey = entry.pos.Y + entry.vel.Y * t + 0.5 * ay * t * t
+        local px = playerPos.X + playerVel.X * t
+        local py = playerPos.Y + playerVel.Y * t
+        local dx, dy = ex - px, ey - py
+        if dx * dx + dy * dy <= combinedSq then
+            return t
+        end
+    end
+    return nil
+end
 ---------------------------------------------------------------
 
 --- 弹幕命中路径的墙壁抽查：闭式解给出命中帧 t 后，抽查路径上 3 个点，

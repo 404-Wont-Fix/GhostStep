@@ -489,6 +489,95 @@ check("arc prediction: straight shot not flagged curved", function()
     assert(t and t > 0, "linear solve still works, t=" .. tostring(t))
 end)
 
+-- ===== 抛物线弹幕预测（恒定加速度模型）=====
+check("parabolic detection from constant acceleration", function()
+    -- 模拟抛物线运动：水平速度恒定，垂直先减速再加速（重力投影）
+    -- 加速度 = (0, 0.5) px/frame²（向下）
+    local history = {}
+    local ax, ay = 0, 0.5  -- 恒定加速度
+    local vx0, vy0 = 8, -6  -- 初速度（向上抛）
+    local px0, py0 = 100, 200
+    for i = 1, 5 do
+        local t = i - 1
+        local px = px0 + vx0 * t + 0.5 * ax * t * t
+        local py = py0 + vy0 * t + 0.5 * ay * t * t
+        local vx = vx0 + ax * t
+        local vy = vy0 + ay * t
+        history[i] = { pos = Vector(px, py), vel = Vector(vx, vy), frame = i }
+    end
+    local entry = {
+        pos = history[5].pos, vel = history[5].vel, radius = 5,
+        history = history, historyCount = 5,
+    }
+    assert(Predict2.isParabolic(entry), "parabolic motion detected")
+    -- 直线弹幕不误判
+    local straightHistory = {}
+    for i = 1, 5 do
+        straightHistory[i] = { pos = Vector(i * 10, 0), vel = Vector(10, 0), frame = i }
+    end
+    local straight = {
+        pos = Vector(50, 0), vel = Vector(10, 0), radius = 5,
+        history = straightHistory, historyCount = 5,
+    }
+    assert(not Predict2.isParabolic(straight), "straight not parabolic")
+end)
+
+check("parabolic prediction extrapolates correctly", function()
+    -- 构造已知抛物线，验证预测位置精度
+    local history = {}
+    local ax, ay = 0, 0.4
+    local vx0, vy0 = 10, -8
+    local px0, py0 = 50, 300
+    for i = 1, 4 do
+        local t = i - 1
+        history[i] = {
+            pos = Vector(px0 + vx0 * t + 0.5 * ax * t * t, py0 + vy0 * t + 0.5 * ay * t * t),
+            vel = Vector(vx0 + ax * t, vy0 + ay * t),
+            frame = i,
+        }
+    end
+    local entry = {
+        pos = history[4].pos, vel = history[4].vel, radius = 5,
+        history = history, historyCount = 4,
+    }
+    -- 预测 t=5 后的位置（从帧3到帧8，dt=5）
+    local predicted = Predict2.predictParabolicPos(entry, 5)
+    -- 理论值: x = 50+10*7+0.5*0*49=120, y = 300-8*7+0.5*0.4*49=253.8
+    -- 从帧4位置外推5帧: x = (50+10*3)+10*5 = 130, y = (300-8*3+0.5*0.4*9)+(-8+0.4*3)*5+0.5*0.4*25
+    local expectedX = entry.pos.X + entry.vel.X * 5 + 0.5 * ax * 25
+    local expectedY = entry.pos.Y + entry.vel.Y * 5 + 0.5 * ay * 25
+    local errX = math.abs(predicted.X - expectedX)
+    local errY = math.abs(predicted.Y - expectedY)
+    assert(errX < 0.01, "parabolic X accurate, err=" .. errX)
+    assert(errY < 0.01, "parabolic Y accurate, err=" .. errY)
+end)
+
+check("parabolic hit detection finds collision", function()
+    -- 抛物线弹幕飞向玩家位置
+    -- 弹幕从左侧低处向上抛，经过 (60,200) 附近后下落
+    local history = {}
+    local ax, ay = 0, 0.3
+    local vx0, vy0 = 6, -2  -- 水平速度6，略微上抛
+    local px0, py0 = 0, 200
+    for i = 1, 4 do
+        local t = i - 1
+        history[i] = {
+            pos = Vector(px0 + vx0 * t + 0.5 * ax * t * t, py0 + vy0 * t + 0.5 * ay * t * t),
+            vel = Vector(vx0 + ax * t, vy0 + ay * t),
+            frame = i,
+        }
+    end
+    local entry = {
+        pos = history[4].pos, vel = history[4].vel, radius = 8,
+        history = history, historyCount = 4,
+    }
+    -- 玩家站在弹幕路径附近（弹幕在 t≈10 经过 x=60, y≈195）
+    local playerPos = Vector(60, 200)
+    local hitT = Predict2.timeToHitParabolic(entry, playerPos, Vector(0, 0), 10, 30)
+    assert(hitT ~= nil, "parabolic hit detected, t=" .. tostring(hitT))
+    assert(hitT >= 0 and hitT <= 30, "hit within horizon")
+end)
+
 -- ===== enemy sensor 采集（接触威胁）=====
 local EnemySensor = require("sensors/enemies")
 local function mockNpc(overrides)

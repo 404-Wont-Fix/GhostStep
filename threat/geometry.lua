@@ -40,7 +40,7 @@ function G.prepare(e,frame,horizon)
     c.start,c.ending=G.window(e,frame)
     c.radius=(e.radius or 0)+(e.uncertainty or 0)
     c.linear=e.kind~="laser" and not ((e.kind or "projectile")=="projectile"
-        and ((e.historyCount or 0)>=3) and (Predict.isCurved(e) or Predict.isTracking(e)))
+        and ((e.historyCount or 0)>=3) and (Predict.isCurved(e) or Predict.isTracking(e) or Predict.isParabolic(e)))
     if c.linear then
         c.x,c.y=e.pos.X+e.vel.X*age,e.pos.Y+e.vel.Y*age
         c.vx,c.vy=e.vel.X,e.vel.Y
