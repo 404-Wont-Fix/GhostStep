@@ -10,13 +10,26 @@ local LaserSensor = {}
 
 local EntityType = EntityType
 
---- 是否为敌方激光（排除玩家/跟班发射）
+--- 是否为敌方激光（排除玩家/跟班发射；排除友方实体发射）
 local function isHostileLaser(e)
     if e.Type ~= EntityType.ENTITY_LASER then return false end
     -- 玩家/跟班发射的跳过
     local st = e.SpawnerType or 0
     if st == EntityType.ENTITY_PLAYER or st == EntityType.ENTITY_FAMILIAR then
         return false
+    end
+    -- 友方实体（被魅惑/道具生成的友方怪物）发射的激光 → 非威胁
+    local okF, isFriendly = pcall(function()
+        return e:HasEntityFlags(EntityFlag.FLAG_FRIENDLY)
+    end)
+    if okF and isFriendly then return false end
+    -- 发射源是友方实体 → 非威胁
+    local spawner = e.SpawnerEntity
+    if spawner then
+        local okSF, spawnerFriendly = pcall(function()
+            return spawner:HasEntityFlags(EntityFlag.FLAG_FRIENDLY)
+        end)
+        if okSF and spawnerFriendly then return false end
     end
     return true
 end

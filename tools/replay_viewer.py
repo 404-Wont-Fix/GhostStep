@@ -31,8 +31,15 @@ KIND_NAMES = {"p": "弹幕", "e": "敌人", "l": "激光", "b": "炸弹", "f": "
 
 # hit 事件归因 kind → 中文名（main.lua ATTR_KIND_NAMES 镜像）
 ATTR_NAMES = {
-    "undetected": "未检测", "late": "检测太晚", "wrongDir": "方向错误",
+    "undetected": "未检测", "unresolved": "待复核", "late": "检测太晚", "wrongDir": "方向错误",
     "lowWeight": "权重不足", "blocked": "位移受阻", "tooFast": "反应不足",
+}
+
+# 常见 Isaac 实体类型 ID → 可读名（受击来源 srcT 映射，仅用于显示；未知类型不列出）
+# 只收录已确认的类型，不确定的不猜
+ENTITY_TYPE_NAMES = {
+    0: "none", 6: "slot/beggar", 9: "laser", 13: "leech", 33: "fireplace",
+    219: "wizoob", 293: "ultra_greed_coin",
 }
 
 # cfg 回显挑的调参关键参数（其余参数全量在 jsonl 里，不在终端刷屏）
@@ -143,7 +150,7 @@ def fmt_duration(seconds):
 
 def list_sessions(directory):
     rows = []
-    for p in sorted(Path(directory).glob("*.jsonl")):
+    for p in sorted(Path(directory).glob("*.jsonl"), reverse=True):  # 最新在前（文件名含时间戳）
         seed, frames, events, bad = parse_session(p)
         if not frames and not events:
             continue
@@ -179,6 +186,8 @@ def print_session_list(rows):
 # ===== 跨会话归因汇总（调参仪表盘: 哪类失败多就知道该调哪组参数）=====
 
 def print_summary(rows):
+    SHORT_THRESHOLD = 60  # <60帧视为短会话（房间切换即断）
+    short_count = sum(1 for r in rows if r["frames"] < SHORT_THRESHOLD and r["hits"] == 0)
     print(f"{'会话':<44} {'受击':>4} {'死亡':>4}  归因分布")
     total = {}
     hits_all = deaths_all = 0
@@ -197,12 +206,17 @@ def print_summary(rows):
     dist = " ".join(f"{ATTR_NAMES.get(k, k)}{v}" for k, v in
                     sorted(total.items(), key=lambda kv: -kv[1])) or "—"
     print(f"{'合计 (' + str(len(rows)) + ' 会话)':<44} {hits_all:>4} {deaths_all:>4}  {dist}")
+    if short_count:
+        print(f"  （其中 {short_count} 个短会话 <{SHORT_THRESHOLD} 帧、无受击，多为房间切换录制）")
     if total:
         worst = max(total, key=total.get)
+        pct = total[worst] / max(hits_all, 1)
         print(f"\n最大失败类别: {ATTR_NAMES.get(worst, worst)} "
-              f"({total[worst]}/{hits_all} = {total[worst] / max(hits_all, 1):.0%})")
+              f"({total[worst]}/{hits_all} = {pct:.0%})")
         hints = {
             "undetected": "→ 检查危险源开关/传感器覆盖（sensors/*）",
+            "unresolved": "→ damage_callback 存在但无法关联已知威胁传感器；"
+                          "检查 srcT/srcV 是否是传感器未覆盖的来源类型（如环境伤害、新敌人）",
             "late": "→ threatSensitivity↑ 或 anticipateStrength↑",
             "wrongDir": "→ fallback 弹道线逃逸惩罚权重↑/候选加密",
             "lowWeight": "→ wallEscapeSensitivity↑ 或远离墙壁偏向加强",
@@ -509,17 +523,44 @@ def print_stats(frames, events):
         srcs = {}
         for e in events:
             if e["ev"] == "hit" and e.get("srcT") not in (None, "?"):
-                srcs[f"{e.get('srcT')}/{e.get('srcV')}"] = srcs.get(f"{e.get('srcT')}/{e.get('srcV')}", 0) + 1
+                src_key = f"{e.get('srcT')}/{e.get('srcV')}"
+                srcs[src_key] = srcs.get(src_key, 0) + 1
         if srcs:
             top = sorted(srcs.items(), key=lambda kv: -kv[1])[:5]
-            print("  受击来源 top: " + "  ".join(f"type{t}×{c}" for t, c in top))
+            def fmt_src(key, cnt):
+                t_str, _, v_str = key.partition("/")
+                try:
+                    t = int(t_str)
+                except ValueError:
+                    return f"type{key}×{cnt}"
+                name = ENTITY_TYPE_NAMES.get(t)
+                if name:
+                    return f"type{key}({name})×{cnt}"
+                return f"type{key}×{cnt}"
+            print("  受击来源 top: " + "  ".join(fmt_src(k, c) for k, c in top))
 
 
 def print_timeline(events, frames):
+    TERRAIN_COLLAPSE = 5  # 连续 >=N 个 terrain 折叠显示
     print("\n事件时间线:")
+    terrain_run = []  # 累积连续 terrain 的 _line 值
+    def flush_terrain():
+        if not terrain_run:
+            return
+        if len(terrain_run) < TERRAIN_COLLAPSE:
+            for ln in terrain_run:
+                print(f"  [行{ln:>5}] terrain")
+        else:
+            print(f"  [行{terrain_run[0]:>5}–{terrain_run[-1]:>5}] terrain ×{len(terrain_run)}（连续）")
+        terrain_run.clear()
+
     for e in events:
         ev = e["ev"]
         ftxt = f"f{e.get('frame')}" if e.get("frame") is not None else ""
+        if ev == "terrain":
+            terrain_run.append(e["_line"])
+            continue
+        flush_terrain()
         if ev == "session_start":
             extra = ""
             if e.get("char") is not None:
@@ -548,6 +589,7 @@ def print_timeline(events, frames):
             print(f"  [行{e['_line']:>5}] toggle        ALT 闪避开关 → {state_txt}  {ftxt}")
         else:
             print(f"  [行{e['_line']:>5}] {ev}")
+    flush_terrain()
 
 
 # ===== 配置回显（A/B 对比的前提：知道录制时参数是什么）=====
@@ -681,7 +723,7 @@ def main():
         print_summary(rows)
         return 0
     if args.latest:
-        return analyze(rows[0]["path"], args.seconds, width, frame_target=args.frame)  # glob 已按文件名(时间戳)排序→首个最新
+        return analyze(rows[0]["path"], args.seconds, width, frame_target=args.frame)  # glob 降序→首个最新
     print_session_list(rows)
     print("\n提示: python tools/replay_viewer.py <文件> 查看详情，--latest 直接分析最新会话，"
           "--summary 归因汇总，--frame N 弹幕场快照")

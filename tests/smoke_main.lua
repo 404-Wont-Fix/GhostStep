@@ -1021,27 +1021,39 @@ end)
 
 check("enemy sensor: fireplace captured with enlarged flame radius", function()
     local trk = Tracker.create()
+    local function makeSprite(anim)
+        return { GetAnimation = function() return anim end }
+    end
     SMOKE.entities = {
         -- 火堆: Size=11 但火焰伤害范围 ~2.5x → 判定圈必须放大
         { Type = 33, Index = 840, Position = Vector(100, 0), Velocity = Vector(0, 0),
-          Size = 11, State = 0, HitPoints = 5, IsDead = function() return false end },
+          Size = 11, IsDead = function() return false end,
+          GetSprite = function() return makeSprite("Flickering") end },
         -- 灰烬火堆（IsDead=true）排除
         { Type = 33, Index = 841, Position = Vector(110, 0), Velocity = Vector(0, 0),
-          Size = 11, State = 0, HitPoints = 5, IsDead = function() return true end },
-        -- 熄灭火堆（State=2，实体还在但火焰已灭）排除
+          Size = 11, IsDead = function() return true end,
+          GetSprite = function() return makeSprite("Flickering") end },
+        -- 熄灭火堆（NoFire 动画，火焰已灭但实体仍在）排除
         { Type = 33, Index = 842, Position = Vector(120, 0), Velocity = Vector(0, 0),
-          Size = 11, State = 2, HitPoints = 0, IsDead = function() return false end },
-        -- 熄灭火堆（HitPoints=0，State未定义兜底）排除
+          Size = 11, IsDead = function() return false end,
+          GetSprite = function() return makeSprite("NoFire") end },
+        -- 熄灭火堆变体（NoFire2）排除
         { Type = 33, Index = 843, Position = Vector(130, 0), Velocity = Vector(0, 0),
-          Size = 11, HitPoints = 0, IsDead = function() return false end },
+          Size = 11, IsDead = function() return false end,
+          GetSprite = function() return makeSprite("NoFire2") end },
+        -- 销毁中火堆（Dissapear 动画）排除
+        { Type = 33, Index = 844, Position = Vector(140, 0), Velocity = Vector(0, 0),
+          Size = 11, IsDead = function() return false end,
+          GetSprite = function() return makeSprite("Dissapear") end },
     }
     EnemySensor.collect(nil, trk, 10, { hazardContact = true })
     assert(trk.count == 1, "fireplace tracked: count=" .. trk.count)
     local fp = trk.tracked[840]
     assert(fp.radius >= 30, "flame radius enlarged, got " .. tostring(fp.radius))
     assert(not trk.tracked[841], "dead fireplace excluded")
-    assert(not trk.tracked[842], "extinguished fireplace (State>=2) excluded")
-    assert(not trk.tracked[843], "extinguished fireplace (HP=0) excluded")
+    assert(not trk.tracked[842], "extinguished fireplace (NoFire) excluded")
+    assert(not trk.tracked[843], "extinguished fireplace (NoFire2) excluded")
+    assert(not trk.tracked[844], "destroying fireplace (Dissapear) excluded")
     SMOKE.entities = {}
 end)
 

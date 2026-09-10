@@ -40,14 +40,15 @@ local function isContactThreat(e)
 
     -- 特殊类型：火堆——静态接触伤害源。不走 ToNPC/IsActiveEnemy 通道
     -- （火堆可能两者都不满足）；radius 在采集处放大
-    -- 熄灭火堆（State>=2 或 HitPoints<=0）无接触伤害，必须排除
+    -- 熄灭火堆（动画 NoFire*）无接触伤害，必须排除
+    -- 注意：State/HitPoints 对火堆不可靠，唯一可靠信号是动画名称
     if e.Type == TYPE_FIREPLACE then
         local okDead, dead = pcall(function() return e:IsDead() end)
         if okDead and dead then return false end
-        local okState, state = pcall(function() return e.State end)
-        if okState and state and state >= 2 then return false end
-        local okHp, hp = pcall(function() return e.HitPoints end)
-        if okHp and hp and hp <= 0 then return false end
+        local anim = safeAnimLower(e)
+        if string.find(anim, "nofire", 1, true) or string.find(anim, "dissapear", 1, true) then
+            return false
+        end
         return "fireplace"
     end
 
@@ -124,6 +125,25 @@ function EnemySensor.collect(player, tracker, frame, config)
         Isaac.DebugString(string.format(
             "[GhostStep3] 敌人采集: GetRoomEntities=%d 接触威胁=%d 帧=%d",
             #entities, count, frame))
+        -- 火堆专项诊断：列出所有火堆实体的动画/状态（排查熄灭误判）
+        if config.diagnosticsEnabled then
+            for i = 1, #entities do
+                local e = entities[i]
+                if e.Type == TYPE_FIREPLACE then
+                    local anim = safeAnimLower(e)
+                    local okS, st = pcall(function() return e.State end)
+                    local okH, hp = pcall(function() return e.HitPoints end)
+                    local okD, dead = pcall(function() return e:IsDead() end)
+                    Isaac.DebugString(string.format(
+                        "[GhostStep3]   火堆 idx=%d anim=%s State=%s HP=%s IsDead=%s pos=(%.0f,%.0f)",
+                        e.Index, anim,
+                        okS and tostring(st) or "?",
+                        okH and string.format("%.1f", hp) or "?",
+                        okD and tostring(dead) or "?",
+                        e.Position.X, e.Position.Y))
+                end
+            end
+        end
         _enemyLoggedThisRoom = true
         _enemyLastCount = count
     end

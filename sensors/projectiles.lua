@@ -14,10 +14,17 @@ local familiarType = EntityType.ENTITY_FAMILIAR
 local ownershipCache = {}
 
 --- NPC 归属检测：递归向上追踪（7.5.5）
+--- 跳过友方实体（FLAG_FRIENDLY）：道具生成的友方怪物是 NPC 但不应视为威胁源
 local function hasNpcOwnerInChain(entity, depth)
     if not entity or depth > 4 then return false end
     local t = entity.Type
     if t == playerType or t == familiarType then return false end -- 玩家/跟班不是NPC
+    -- 友方实体（被魅惑/道具生成的友方怪物）→ 非威胁，停止追踪此分支
+    local okF, isFriendly = pcall(function()
+        return entity:HasEntityFlags(EntityFlag.FLAG_FRIENDLY)
+    end)
+    if okF and isFriendly then return false end
+    -- 是否为敌对 NPC
     local ok, result = pcall(function()
         return (entity.ToNPC ~= nil and entity:ToNPC() ~= nil) or (entity.IsEnemy ~= nil and entity:IsEnemy())
     end)
@@ -38,15 +45,23 @@ local function classify(proj, frame, cacheTtl)
     end
 
     local hostile
-    local ok, chainResult = pcall(hasNpcOwnerInChain, proj, 0)
-    if ok and chainResult then
-        hostile = true
+    -- 弹幕自身带 FLAG_FRIENDLY → 直接判定为友方（最快路径）
+    local okPF, projFriendly = pcall(function()
+        return proj:HasEntityFlags(EntityFlag.FLAG_FRIENDLY)
+    end)
+    if okPF and projFriendly then
+        hostile = false
     else
-        local spawnerType = proj.SpawnerType or 0
-        if spawnerType == playerType or spawnerType == familiarType then
-            hostile = false
+        local ok, chainResult = pcall(hasNpcOwnerInChain, proj, 0)
+        if ok and chainResult then
+            hostile = true
         else
-            hostile = true -- 未知归属 → 默认敌方
+            local spawnerType = proj.SpawnerType or 0
+            if spawnerType == playerType or spawnerType == familiarType then
+                hostile = false
+            else
+                hostile = true -- 未知归属 → 默认敌方
+            end
         end
     end
 
