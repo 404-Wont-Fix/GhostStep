@@ -405,5 +405,75 @@ test('own bomb uses actual countdown and flight only filters ground creep',funct
     assert(not tr.tracked[43] and tr.tracked[44])
     SMOKE.entities={}
 end)
+test('default toggle key is the engine Keyboard code for left Alt',function()
+    -- 旧值 56 在 GLFW 键盘码里是数字键 8 → 按 Alt 从未触发过（回放里 toggle 事件数=0）
+    assert(Defaults.get().toggleKey==342,'left Alt must be 342, got '..tostring(Defaults.get().toggleKey))
+end)
+test('door cell (WALL_EXCEPT_PLAYER) is not treated as a wall',function()
+    -- 回归: 门格锚点在房间形状之外 → 旧实现判成不可行走，玩家进门洞被判"在墙里 18px"
+    local old=GridCollisionClass.COLLISION_WALL_EXCEPT_PLAYER
+    GridCollisionClass.COLLISION_WALL_EXCEPT_PLAYER=5
+    local r={GetGridWidth=function() return 3 end,GetGridSize=function() return 9 end,
+        GetGridPosition=function(_,i) return Vector(i%3*40,math.floor(i/3)*40) end,
+        GetGridEntity=function(_,i)
+            return {CollisionClass=(i==0 and 5 or 0),GetType=function() return 0 end}
+        end,
+        -- 房间形状从 (0,0) 起；门格(0,0)的锚点在 (-20,-20) 之外
+        IsPositionInRoom=function(_,p) return p.X>=0 and p.Y>=0 end}
+    local t=Terrain.create(); t:build(r,false,Defaults.get())
+    assert(t.grid[1].walkable,'door cell must be walkable')
+    local hard,danger=t:probe(Vector(0,0),10)
+    assert(hard==0 and danger==0,'doorway must not report penetration, got '..hard..'/'..danger)
+    GridCollisionClass.COLLISION_WALL_EXCEPT_PLAYER=old
+end)
+test('spike cells are graded danger instead of hard walls',function()
+    local r={GetGridWidth=function() return 3 end,GetGridSize=function() return 9 end,
+        GetGridPosition=function(_,i) return Vector(i%3*40,math.floor(i/3)*40) end,
+        GetGridEntity=function(_,i)
+            if i==4 then return {CollisionClass=0,State=0,GetType=function() return GridEntityType.GRID_SPIKES end} end
+            return {CollisionClass=0,GetType=function() return 0 end}
+        end}
+    local t=Terrain.create(); t:build(r,false,Defaults.get())
+    local hard,danger=t:probe(Vector(20,20),10)
+    assert(hard==0,'spike must not block movement (got hard='..hard..')')
+    assert(danger>0,'spike must report danger depth')
+    assert(t:isSafeAt(Vector(20,20),10,false),'hard-only safety ignores spikes')
+    assert(not t:isSafeAt(Vector(20,20),10),'default safety still counts spikes')
+end)
+test('ai command is blended with player input, never fully overrides',function()
+    local Writer=require('control/input_writer')
+    local c={active=true,direction=Vector(0,0),frame=0,blendWeight=0.85,playerDir=Vector(1,0)}
+    SMOKE.frameCount=0
+    local p={Type=EntityType.ENTITY_PLAYER}
+    -- AI 要停 + 玩家按右 → 只压到 15%（刹车），不是把玩家按住
+    local v=Writer.onInputAction(c,false,p,InputHook.GET_ACTION_VALUE,ButtonAction.ACTION_RIGHT)
+    assert(math.abs(v-0.15)<0.001,'brake must keep 15% of player input, got '..tostring(v))
+    c.direction=Vector(1,0)
+    v=Writer.onInputAction(c,false,p,InputHook.GET_ACTION_VALUE,ButtonAction.ACTION_RIGHT)
+    assert(math.abs(v-1)<0.001,'same direction keeps full amplitude, got '..tostring(v))
+end)
+test('spike ring with bomb: planner escapes instead of freezing the player',function()
+    -- 回放房93/房间83诅咒房格局: 十地刺环 + 宝箱开出的炸弹（引信读不到→窗口无限）
+    local W=5
+    local spikes={[5*1+2]=true,[5*2+1]=true,[5*2+3]=true,[5*3+2]=true} -- (2,1)(1,2)(3,2)(2,3)
+    local r={GetGridWidth=function() return W end,GetGridSize=function() return W*W end,
+        GetGridPosition=function(_,i) return Vector(i%W*40,math.floor(i/W)*40) end,
+        GetGridEntity=function(_,i)
+            if spikes[i] then
+                return {CollisionClass=0,State=0,GetType=function() return GridEntityType.GRID_SPIKES end}
+            end
+            return {CollisionClass=0,GetType=function() return 0 end}
+        end}
+    local ter=Terrain.create(); ter:build(r,false,Defaults.get())
+    local st=state()
+    st.player.position=Vector(80,80)   -- 环心 (2,2)
+    st.player.velocity=Vector(0,0)
+    st.player.inputDir=Vector(-1,0)    -- 玩家按左（正对着地刺）
+    local bomb={kind='bomb',id='b:9',pos=Vector(80,80),vel=Vector(0,0),speed=0,radius=90,damage=12}
+    local u=run(st,{bomb},ter)
+    assert(u,'trapped in blast + spike ring must not produce a stop/freeze')
+    assert(u:Length()>0.9,'escape must be full strength, got '..tostring(u:Length()))
+    assert(not (math.abs(u.X)<0.05 and math.abs(u.Y)<0.05),'command must point somewhere')
+end)
 print(string.format('SHARED CONTROL: %d passed, %d failed',checks-failures,failures))
 assert(failures==0,'shared control regressions failed')

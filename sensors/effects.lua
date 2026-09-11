@@ -8,6 +8,8 @@ local EffectSensor = {}
 
 local EntityType = EntityType
 local EffectVariant = EffectVariant
+local playerType = EntityType.ENTITY_PLAYER
+local familiarType = EntityType.ENTITY_FAMILIAR
 
 -- ===== 威胁分类表（EffectVariant 枚举，来自 auto_dodge 验证实现）=====
 
@@ -53,6 +55,17 @@ local VISUAL_BLACKLIST = {
     [59] = true, -- DUST_CLOUD
 }
 
+--- 链式归属追踪：向上遍历 SpawnerEntity→Parent 链，检查是否为玩家/跟班相关
+--- 解决跟班生成的地面效果 SpawnerType==0（默认值）导致误判为敌方的问题
+--- 参考 sensors/projectiles.lua 的 hasNpcOwnerInChain 模式
+local function isPlayerRelated(entity, depth)
+    if not entity or (depth or 0) > 3 then return false end
+    local okT, t = pcall(function() return entity.Type end)
+    if okT and (t == playerType or t == familiarType) then return true end
+    return isPlayerRelated(entity.SpawnerEntity, (depth or 0) + 1)
+        or isPlayerRelated(entity.Parent, (depth or 0) + 1)
+end
+
 --- 是否为威胁效果
 local function isThreatEffect(variant)
     if VISUAL_BLACKLIST[variant] then return false end
@@ -79,7 +92,10 @@ function EffectSensor.collect(player, tracker, frame, config)
         -- 伤害值（auto_dodge 模式: effect.CollisionDamage or entity.CollisionDamage or 0）
         local damage = safeGet(e, function(x) return x.CollisionDamage or 0 end, 0)
         local creep=CREEP_VARIANTS[variant]
-        local playerOwned=e.SpawnerType==EntityType.ENTITY_PLAYER or e.SpawnerType==EntityType.ENTITY_FAMILIAR
+        -- 链式友方检测：跟班生成的水渍 SpawnerType 可能为0（默认值），
+        -- 仅检查 SpawnerType 会漏判，需遍历 SpawnerEntity/Parent 链
+        local playerOwned=e.SpawnerType==playerType or e.SpawnerType==familiarType
+            or isPlayerRelated(e.SpawnerEntity, 0) or isPlayerRelated(e.Parent, 0)
         local immuneGround=creep and player and player.canFly
         local enabled=not creep or config.hazardCreep
         if enabled and not immuneGround and not (creep and playerOwned)

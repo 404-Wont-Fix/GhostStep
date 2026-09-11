@@ -10,8 +10,11 @@ function Defaults.get()
         ---------------------------------------------------------------
         -- 常规
         ---------------------------------------------------------------
-        enabled = true,             -- 自动躲避总开关
-        toggleKey = 56,             -- 键盘键值（默认左Alt = 56）
+        enabled = true,
+        -- 键盘键值 = 引擎 Keyboard 枚举（GLFW 键码），不是顺序索引。
+        -- 左Alt = 342（游戏自带 resources/scripts/enums.lua）。
+        -- 历史 bug: 旧默认 56 在 GLFW 码里是数字键 8，所以按 Alt 从未生效。
+        toggleKey = 342,
         preset = 2,                 -- 1低 2适中 3高
 
         ---------------------------------------------------------------
@@ -30,10 +33,23 @@ function Defaults.get()
         -- 躲避（算法核心参数）
         ---------------------------------------------------------------
         plannerHorizon = 18,        -- 引擎帧；需通过实机运动日志校准
+        plannerHorizonWide = 30,    -- 存在炸弹/激光/大半径威胁时的窗口（帧）
+                                    -- 实测: 18 帧 ≈ 73px 位移，跑不出 90px 爆圈 → 看不到可行解
         plannerMaxCandidates = 64,
         plannerMaxChecks = 80000,   -- 几何检查次数硬上限
+        -- 地刺代价（不再硬否决；见 decision/predictive.lua）
+        -- 一次性接触代价 + 停留代价（每帧）。停留代价故意取小值：
+        -- 地刺环里所有方向都踩刺时，帧数差异不应盖过玩家意图。
+        spikeContactRisk = 55,
+        spikeRiskPerTick = 0.5,
+        -- 射击前摇走廊（npc_attacks ranged 类）几何：
+        -- 实测原半宽 22 + 长 160 会把"从机关前经过"整条封死
+        rangedCorridorRadius = 8,
+        rangedCorridorMaxLen = 240,
         intentPenalty = 3,
         smoothPenalty = 0.2,
+        riskTieEpsilon = 5,         -- 风险平手阈值：差不超过它就按"更贴合玩家意图"选
+                                    -- 旧值 0.05 太严：3.44 的边际收益就能把方向翻到意图反面
         safetyMargin = 1.5,
         stuckFrames = 6,
         escapeMaxNodes = 48,
@@ -72,7 +88,9 @@ function Defaults.get()
         ownershipCacheTtl = 180,    -- 弹幕归属缓存帧数
         maxProjectiles = 300,       -- 弹幕采集上限（防御）
         degradeThreshold = 50,      -- 弹幕数超过此值 → 采样降级
-        budgetMs = 1.5,             -- 每帧决策预算（毫秒，原则4；Tier 1 轨迹评分需要更大预算）
+        budgetMs = 5,               -- 每帧决策预算（毫秒，原则4）
+                                    -- 实测: 1.5ms 时 78% 的帧搜不完（13k 帧样本），
+                                    -- 帧总耗时中位 3ms / p99 6ms（33ms 帧预算）→ 5ms 安全
 
         ---------------------------------------------------------------
         -- 显示

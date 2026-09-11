@@ -1108,15 +1108,21 @@ check("synth: wall cap relaxed when in danger zone", function()
     assert(math.abs(w2 - 0.85) < 0.001, "danger zone wall cap=0.85, got " .. tostring(w2))
 end)
 
-check("enemy sensor: fireplace captured with enlarged flame radius", function()
+check("enemy sensor: fireplace uses its own collision size (no inflation)", function()
     local trk = Tracker.create()
     local function makeSprite(anim)
         return { GetAnimation = function() return anim end }
     end
     SMOKE.entities = {
-        -- 火堆: Size=11 但火焰伤害范围 ~2.5x → 判定圈必须放大
+        -- 火堆: 判定圈 = 实体自身 Size（与其他传感器一致），不再 ×2.5/×2.0/×1.6。
+        -- 回归背景: 旧实现 max(Size*1.6, 30) 被 MIN=30 钳死，实际半径恒为 30，
+        -- 禁入圈 = 30+10+1.5 = 41.5px > 40px 格距 → 连相邻格一起封死。
         { Type = 33, Index = 840, Position = Vector(100, 0), Velocity = Vector(0, 0),
-          Size = 11, IsDead = function() return false end,
+          Size = 16.25, IsDead = function() return false end,
+          GetSprite = function() return makeSprite("Flickering") end },
+        -- Size 读不到时的兜底下限（不允许半径 0 → 完全不避）
+        { Type = 33, Index = 845, Position = Vector(150, 0), Velocity = Vector(0, 0),
+          Size = 0, IsDead = function() return false end,
           GetSprite = function() return makeSprite("Flickering") end },
         -- 灰烬火堆（IsDead=true）排除
         { Type = 33, Index = 841, Position = Vector(110, 0), Velocity = Vector(0, 0),
@@ -1136,9 +1142,11 @@ check("enemy sensor: fireplace captured with enlarged flame radius", function()
           GetSprite = function() return makeSprite("Dissapear") end },
     }
     EnemySensor.collect(nil, trk, 10, { hazardContact = true })
-    assert(trk.count == 1, "fireplace tracked: count=" .. trk.count)
+    assert(trk.count == 2, "fireplace tracked: count=" .. trk.count)
     local fp = trk.tracked[840]
-    assert(fp.radius >= 30, "flame radius enlarged, got " .. tostring(fp.radius))
+    assert(fp.radius == 16.25, "fireplace radius must equal entity Size, got " .. tostring(fp.radius))
+    local fpMin = trk.tracked[845]
+    assert(fpMin.radius == 12, "radius floor for missing Size, got " .. tostring(fpMin.radius))
     assert(not trk.tracked[841], "dead fireplace excluded")
     assert(not trk.tracked[842], "extinguished fireplace (NoFire) excluded")
     assert(not trk.tracked[843], "extinguished fireplace (NoFire2) excluded")

@@ -7,6 +7,14 @@
 local MCM = {}
 
 local CAT = "GhostStep3"
+-- 引擎 Keyboard 枚举（GLFW 码）常用键 → 中文名（菜单可读性）
+local KEY_NAMES = {
+    [342] = "左Alt", [346] = "右Alt", [340] = "左Shift", [341] = "左Ctrl",
+    [32] = "空格", [258] = "Tab", [96] = "~", [256] = "Esc",
+}
+-- 旧版把键盘值写成"顺序索引"：56 在 GLFW 码里是数字键 8，实际指向左Alt。
+-- 存档里可能残留该错误值，加载时一次性纠正（否则只改默认值无效）。
+local LEGACY_KEY_FIX = { [56] = 342 }
 -- json 为 Isaac 内置模块（游戏自带，无需随 mod 分发）
 local hasJson, json = pcall(require, "json")
 if not hasJson then json = nil end
@@ -15,7 +23,7 @@ if not hasJson then json = nil end
 local SETTINGS = {
     -- 常规
     { "常规", "enabled",            "bool",   true,  "自动躲避总开关" },
-    { "常规", "toggleKey",          "key",    56,    "开启/关闭快捷键 (默认左Alt)" },
+    { "常规", "toggleKey",          "key",    342,   "开启/关闭快捷键 (默认左Alt)" },
     { "常规", "preset",             "number", 2,     min = 1, max = 3, step = 1,
       names = { "低", "适中", "高" }, info = "辅助强度：适中为默认；高档更早、更明显地修正输入" },
     -- 危险源
@@ -27,7 +35,7 @@ local SETTINGS = {
     { "危险源", "hazardNpcAttacks",  "bool",  true, "躲避NPC攻击前兆 (Phase 3)" },
     { "危险源", "hazardSpikes",      "bool",  true, "躲避地刺" },
     { "危险源", "hazardTnt",         "bool",  true, "躲避TNT爆炸" },
-    -- 躲避（共享控制参数由辅助强度统一设置）
+    { "躲避", "maxDodgeWeight",    "percent", 85,   "AI 输入权重上限(%): 越高 AI 介入越强，越低越容易掰回" },
     -- 显示
     { "显示", "renderEnabled",    "bool", false, "视觉反馈总开关" },
     { "显示", "renderThreatBar",  "bool", true,  "威胁等级指示器" },
@@ -115,6 +123,8 @@ function MCM.loadSettings()
         -- （这个 bug 导致 AI 权重指数爆炸到8e13，原则2完全失效）
         if k == "maxDodgeWeight" and type(v) == "number" then
             config.maxDodgeWeight = math.min(0.95, math.max(0.5, v / 100))
+        elseif k == "toggleKey" and LEGACY_KEY_FIX[v] ~= nil then
+            config.toggleKey = LEGACY_KEY_FIX[v]
         elseif config[k] ~= nil and type(v) == type(config[k]) then
             config[k] = v
         end
@@ -224,7 +234,8 @@ local function addKeybind(sub, attr, default, info)
             return stateRef.config[attr]
         end,
         Display = function()
-            return attr .. ": " .. tostring(stateRef.config[attr])
+            local v = stateRef.config[attr]
+            return attr .. ": " .. (KEY_NAMES[v] or tostring(v))
         end,
         OnChange = function(v) onChange(attr, v) end,
         Info = { info },

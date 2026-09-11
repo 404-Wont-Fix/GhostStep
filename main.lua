@@ -262,7 +262,7 @@ local function onPlayerDeath()
 end
 
 -- ===== 主更新（MC_POST_PLAYER_UPDATE, 30fps）=====
--- ALT开关上升沿追踪（可靠工作于任意MC回调）
+-- ALT 开关上升沿追踪（本回调下 IsButtonTriggered 不可靠，自己做边缘检测）
 local prevToggleKeyState = false
 local onHpLost -- 前向声明（HP 轮询受伤兜底，定义见下方受伤诊断段）
 
@@ -320,14 +320,16 @@ local function onPlayerUpdate(player)
     local okInput,raw=pcall(InputReader.readMoveVector,state.player.controllerIndex)
     state.control.readingRaw=false
     state.player.inputDir=okInput and raw or Vector(0,0)
-    -- ALT 开关：上升沿检测（IsButtonTriggered 在 MC_POST_PLAYER_UPDATE 不可靠，
-    -- Repentance+ 需用 IsButtonPressed + 边缘检测才能可靠捕获按键）
+    -- 玩家原始输入（限幅/死区后）供输入混合层使用：AI 出的是"叠加偏移"，
+    -- 不是把玩家输入整根抽走（input_writer 按 blendWeight 混合）。
+    state.control.playerDir=InputReader.executable(state.player.inputDir)
+    -- ALT 开关：按下沿切换（再按一次恢复）。键值 = Keyboard 枚举，左Alt = 342。
     local keyDown = Input.IsButtonPressed(Config.toggleKey, 0)
     if keyDown and not prevToggleKeyState then
-        state.userEnabled=not state.userEnabled
+        state.userEnabled = not state.userEnabled
         Runtime.suspendThreat(state)
-        sessionRecorder:event({ev="toggle",on=state.userEnabled,frame=frame})
-        state.statusToastUntil=state.renderCount+90
+        sessionRecorder:event({ev="toggle",on=state.userEnabled,frame=frame,mode="toggle"})
+        state.statusToastUntil = state.renderCount + 90
     end
     prevToggleKeyState = keyDown
     local combat=isCombat(); state.inCombat=combat
@@ -349,6 +351,8 @@ local function onPlayerUpdate(player)
             terrain=terrain,getHazards=getHazards,omittedCount=tracker.omittedCount or 0},frame)
         state.control.direction=command or Vector(0,0)
         state.control.weight=command and math.min(1,(command-InputReader.executable(state.player.inputDir)):Length()/2) or 0
+        -- 混合权重: AI 方向在最终输入里的占比上限（原则2 永不 1.0）
+        state.control.blendWeight=command and (Config.maxDodgeWeight or 0.85) or 0
         state.control.active=command~=nil and not Config.observationMode
         state.control.frame=frame
     else

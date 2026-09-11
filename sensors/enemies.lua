@@ -15,10 +15,13 @@ local TYPE_ULTRA_GREED_COIN = 293 -- Ultra Greed 扔的硬币，有接触伤害
 local TYPE_WIZOOB = 219           -- 幽灵敌人，appear 动画时无接触伤害
 local TYPE_FIREPLACE = 33         -- 火堆：静态接触伤害，火焰范围 >> entity.Size
 
--- 火堆火焰伤害半径（像素，经验值）：火堆实际烫伤范围约为 Size 的 2.5 倍，
--- 用 entity.Size 判定会漏（实测 2026-09-08：站视觉火焰内 hit=-1 被磨死）
-local FIREPLACE_RADIUS_MIN = 30
-local FIREPLACE_RADIUS_SCALE = 2.0
+-- 火堆危险半径：直接用实体自身 Size（与其他传感器一致）。
+-- 历史: 2.5×/2.0×/1.6× 都是对 Size 的膨胀，且 MIN=30 把后两次修正完全钳死；
+-- 代价半径 = Size + 玩家半径 10 + safetyMargin 1.5 ≈ 27.5px，而房间格距只有 40px，
+-- 半径 30 时禁入圈达 41.5px > 40px → 连相邻格一起封死（用户反馈"范围有点大"）。
+-- 实测火堆实体半径：回放里恒为 30（会话28 帧46224）→ Size*1.6 被 MIN 钳死。
+-- MIN 只作为 Size 读取失败的兜底（避免半径 0 导致完全不避）。
+local FIREPLACE_RADIUS_MIN = 12
 
 --- 安全读取动画名称（小写）
 local function safeAnimLower(entity)
@@ -97,8 +100,8 @@ function EnemySensor.collect(player, tracker, frame, config)
             count = count + 1
             local radius = e.Size
             if threatKind == "fireplace" then
-                -- 火焰伤害范围 >> entity.Size：放大判定圈，站火焰内即危险
-                radius = math.max(radius * FIREPLACE_RADIUS_SCALE, FIREPLACE_RADIUS_MIN)
+                -- 火堆：接触伤害用实体碰撞半径，不额外膨胀（过大会封死相邻格）
+                radius = math.max(radius or 0, FIREPLACE_RADIUS_MIN)
             end
             entries[count] = {
                 index = e.Index,

@@ -6,18 +6,21 @@ local Motion=require("control/motion_model")
 local Geometry=require("threat/geometry")
 local Escape=require("decision/local_escape")
 local function distance(a,b) return math.sqrt((a.X-b.X)^2+(a.Y-b.Y)^2) end
+local function isZero(u) return u==nil or u:Length()<0.05 end
 local function traceRow(c)
     return {id=c.id,x=c.u.X,y=c.u.Y,duration=c.duration,risk=c.risk,cost=c.cost,
         hit=c.hit,hitId=c.hitId,terrain=c.blocked,complete=c.complete,clearance=c.clearance,
         exposure=c.exposure,exitTime=c.exitTime,terminalRisk=c.terminalRisk,terrainRejected=c.terrainRejected,
+        spikeTicks=c.spikeTicks,
         endX=c.endX,endY=c.endY,plannedDisplacement=c.plannedDisplacement}
 end
 function Planner.run(state,deps,frame)
     local cfg,p,d=deps.config,state.player,state.decision
     local terrain=deps.terrain
     local begin=Isaac.GetTime()
-    local deadline=begin+(cfg.budgetMs or 1.5)
-    local horizon=math.max(6,math.min(30,cfg.plannerHorizon or 18))
+    local deadline=begin+(cfg.budgetMs or 5)
+    local maxHorizon=cfg.plannerHorizonMax or 34
+    local horizon=math.max(6,math.min(cfg.plannerHorizon or 18,maxHorizon))
     local m=Motion.ensure(state)
     local nominal=Reader.executable(p.inputDir or Vector(0,0))
     local memory=d.planner or {failed=0}
@@ -32,10 +35,12 @@ function Planner.run(state,deps,frame)
         if e.kind=="bomb" or e.kind=="laser" or (e.radius or 0)>=32 then wide=true; break end
     end
     -- 密集圆形弹幕优先保住近期候选搜索。大范围攻击保留提前撤离窗口。
-    if not wide then
-        if #all>160 then horizon=math.min(horizon,10)
-        elseif #all>64 then horizon=math.min(horizon,14) end
-    end
+    -- 实测: 最大速度 ≈4px/帧 → 18 帧只能跑 ≈73px，而炸弹要跑出 ≈100px。
+    -- 炸弹/激光/大体积威胁时动态扩窗（只扩不缩），否则模型永远看不到可行解。
+    if wide then
+        horizon=math.max(horizon,math.min(cfg.plannerHorizonWide or 30,maxHorizon))
+    elseif #all>160 then horizon=math.min(horizon,10)
+    elseif #all>64 then horizon=math.min(horizon,14) end
     local hazards,caches={},{}
     for i=1,#all do
         if Geometry.reachable(all[i],p.position,p.radius+5,math.max(m.speed,m.b/(1-m.a)),horizon) then
@@ -61,24 +66,50 @@ function Planner.run(state,deps,frame)
     d.metrics=metrics
     local rows={}
     local workLimit=cfg.plannerMaxChecks or 80000
-    local initialDepth=terrain.valid and terrain:penetration(p.position,p.radius,true) or 0
+    local initialDepth=0
+    local initialDanger=0
+    if terrain.valid then initialDepth,initialDanger=terrain:probe(p.position,p.radius) end
     local margin=(cfg.safetyMargin or 1.5)+math.min(3,m.error*0.2)
+    -- 地刺不再硬否决（见 evaluate）：一次性接触代价 + 每帧停留代价。
+    -- 参考量级：命中惩罚 100；踩刺接触 55 + 0.5×帧数。
+    -- 接触代价一次性收取（对齐游戏无敌帧：一次穿过只掉一次血），
+    -- 停留代价要小，否则"地刺环里所有方向都踩刺"时，几个帧数的差异
+    -- 会盖过玩家意图、把方向掰到 135° 之外（实测按左被推到右下）。
+    local spikeContactRisk=cfg.spikeContactRisk or 55
+    local spikeRiskPerTick=cfg.spikeRiskPerTick or 0.5
+    local nominalLen=nominal:Length()
     local originalRisk,originalHit
     local function evaluate(c,mandatory)
         c.complete=true; c.risk=0; c.exposure=0; c.clearance=nil; c.blocked=false
         local x,y,vx,vy=p.position.X,p.position.Y,p.velocity.X,p.velocity.Y
         local points,danger={{x,y}},{}
         local deviation,depth=0,initialDepth
+        local peakDepth,spikeTicks=initialDepth,0
         local minX,maxX,minY,maxY=x,x,y,y
         for t=1,horizon do
             local u=t<=c.duration and c.u or nominal
             local nx,ny,nvx,nvy=Motion.step(m,x,y,vx,vy,u)
             if terrain.valid then
                 local pos=Vector(nx,ny)
-                local nextDepth=terrain:penetration(pos,p.radius,true)
-                if (depth<=0 and not terrain:segmentSafe(Vector(x,y),pos,p.radius,true,depth,nextDepth))
-                    or (depth>0 and nextDepth>depth+0.01) then c.blocked=true end
-                depth=nextDepth
+                local hard,soft=terrain:probe(pos,p.radius)
+                -- 撞墙：引擎里玩家中心不会进入实心格，位置钉在上一帧、速度清零。
+                -- 否则"跑向墙"会被 segmentSafe 当成穿墙否决；窗口拉长到 30 帧后，
+                -- 按 6px/帧 能跑 180px，房间半高只有 140px → 纵向躲避会被远处的墙全判死。
+                if depth<=0 and hard>0 then
+                    nx,ny,nvx,nvy=x,y,0,0
+                    hard,soft=terrain:probe(Vector(x,y),p.radius)
+                end
+                -- 只在"上一步在硬地形外"时判穿墙。玩家已经在墙里/门洞里时，
+                -- 所有候选共享同一初速度、第一帧位置完全相同；旧的 nextDepth>depth+0.01
+                -- 会让全部候选同帧被判死（实测房间 84：18 个候选在 t=1 全灭）。
+                -- 起点已在硬地形内时改用 peakDepth 计价，驱动"尽快脱出"。
+                if depth<=0 and not terrain:segmentSafe(Vector(x,y),Vector(nx,ny),p.radius,false,depth,hard) then
+                    c.blocked=true
+                end
+                depth=hard
+                if hard>peakDepth then peakDepth=hard end
+                -- 地刺/TNT：足迹重叠即计入暴露帧数（软代价，不封路）
+                if soft>0 then spikeTicks=spikeTicks+1 end
             end
             if c.blocked and not mandatory then
                 -- 不可执行的路径无需再扫描弹幕；把预算留给其他方向。
@@ -131,13 +162,18 @@ function Planner.run(state,deps,frame)
             if t>horizon-3 and severity>0 then terminalRisk=terminalRisk+1 end
         end
         c.terminalRisk=terminalRisk
+        c.spikeTicks=spikeTicks
         c.risk=(c.hit and 100 or 0)+c.exposure*4+terminalRisk*4+(c.blocked and 10000 or 0)
-        if initialDepth>0 then c.risk=c.risk+depth*10 end
+        -- 硬地形穿透：按窗口内最深穿透扣分
+        if peakDepth>0 then c.risk=c.risk+peakDepth*10 end
+        -- 地刺/TNT：接触 + 停留计价，而不是一击否决
+        if spikeTicks>0 then c.risk=c.risk+spikeContactRisk+spikeTicks*spikeRiskPerTick end
         local smooth=memory.last and distance(c.u,memory.last)^2 or 0
         local exits=0
         if terrain.valid then
+            -- 出口数只看硬地形（地刺现在是可穿行的代价，不算"没有出口"）
             for _,v in ipairs({Vector(20,0),Vector(-20,0),Vector(0,20),Vector(0,-20)}) do
-                if terrain:isSafeAt(Vector(x,y)+v,p.radius) then exits=exits+1 end
+                if terrain:isSafeAt(Vector(x,y)+v,p.radius,false) then exits=exits+1 end
             end
         end
         local enemyCost=0
@@ -152,7 +188,8 @@ function Planner.run(state,deps,frame)
         if terrain.valid then
             local left,top=terrain.topLeft.X,terrain.topLeft.Y
             local cx,cy=math.floor((x-left)/40),math.floor((y-top)/40)
-            for dy=-1,1 do for dx=-1,1 do
+            -- 扫描 5×5 格（半径2格≈100px），覆盖高速移动时路径穿过的地刺
+            for dy=-2,2 do for dx=-2,2 do
                 local gx,gy=cx+dx,cy+dy
                 if gx>=0 and gy>=0 and gx<terrain.sizeX and gy<terrain.sizeY then
                     local cell=terrain.grid[gy*terrain.sizeX+gx+1]
@@ -165,7 +202,7 @@ function Planner.run(state,deps,frame)
             end end
         end
         c.cost=deviation*(cfg.intentPenalty or 3)/horizon
-            +smooth*(cfg.smoothPenalty or 0.2)+enemyCost*0.06+spikeCost*0.15-exits*0.025
+            +smooth*(cfg.smoothPenalty or 0.2)+enemyCost*0.06+spikeCost*0.5-exits*0.025
         metrics.evaluated=metrics.evaluated+1
         rows[#rows+1]=traceRow(c)
         return c
@@ -176,14 +213,27 @@ function Planner.run(state,deps,frame)
     metrics.nominalRisk,metrics.nominalHit=originalRisk,originalHit
     metrics.nominalComplete=base.complete
     local best=base
+    local bestNonZero=base
+    -- 风险差不超过 eps 就当作平手，改由 cost（含玩家意图偏离度 deviation）决定。
+    -- 旧实现 eps=0.05，导致 3.44 的边际收益就能把方向翻成玩家意图的反面
+    -- （实测房间 36：按左、输出 (0.96,-0.29)，下一帧再翻回来 = 手感抽抽）。
+    local riskEps=cfg.riskTieEpsilon or 5
+    local function better(c,b)
+        return not c.blocked and (b.blocked or c.risk<b.risk-riskEps
+            or (math.abs(c.risk-b.risk)<=riskEps and c.cost<b.cost))
+    end
     local function finish(reason)
         d.reason=reason
         d.degraded=metrics.denseHorizon or not metrics.complete or Isaac.GetTime()>=deadline
         d.usedBudgetMs=Isaac.GetTime()-begin
         metrics.selectedRisk=best.risk; metrics.selectedId=best.id
         metrics.triggerId=base.hitEntry and base.hitEntry.id
-        metrics.triggerKind=base.hitEntry and base.hitEntry.kind or (initialDepth>0 and "terrain" or nil)
+        metrics.triggerKind=base.hitEntry and base.hitEntry.kind
+            or (initialDepth>0 and "terrain")
+            or ((initialDanger>0 or (base.spikeTicks or 0)>0) and "spike" or nil)
         metrics.initialPenetration=initialDepth
+        metrics.initialSpikeDepth=initialDanger
+        metrics.spikeRiskScale=spikeContactRisk
         metrics.riskImprovement=base.risk-best.risk
         metrics.selectedSafe=best.complete and not best.hit and not best.blocked
         metrics.triggerX=base.hitEntry and base.hitEntry.pos.X
@@ -200,13 +250,18 @@ function Planner.run(state,deps,frame)
         t.hitKind=base.hitEntry and base.hitEntry.kind or nil
         t.hitDamage=base.hitEntry and base.hitEntry.damage or nil
         t.hitDist=base.hitEntry and base.hitEntry.pos:Distance(p.position) or nil
-        t.level=base.hit and math.max(0.3,1-base.hit/horizon) or (initialDepth>0 and 0.9 or 0)
+        t.level=base.hit and math.max(0.3,1-base.hit/horizon)
+            or (initialDepth>0 and 0.9 or (initialDanger>0 and 0.6 or 0))
         t.collisionUrgency=t.level
         return d.command
     end
     if not base.complete then return finish("baseline_budget_incomplete") end
     -- 单纯顶着无危险的墙，保持玩家输入（允许正常出门、贴墙射击）。
-    if not base.hit and initialDepth<=0 then memory.failed=0; memory.last=nil; return finish("nominal_safe") end
+    -- 地刺现在是软代价：玩家自愿踩刺时仍不接管，但原输入路径会碰上地刺时必须进入候选比较
+    -- （否则 spikes 完全不会被避让 —— 这正是"地刺避让不明显"的原因之一）。
+    if not base.hit and initialDepth<=0 and (base.spikeTicks or 0)==0 then
+        memory.failed=0; memory.last=nil; return finish("nominal_safe")
+    end
     local candidates,seen={},{}
     local function add(u,duration)
         u=Reader.executable(u)
@@ -217,12 +272,16 @@ function Planner.run(state,deps,frame)
             candidates[#candidates+1]={id=#candidates+1,u=u,duration=duration}
         end
     end
-    -- 先评估可实际撤离的全力度动作，不能让停止/半速占满有限预算。
-    -- 方向每帧重新验证；安全时立即恢复玩家输入，不盲目锁定旧命令。
+    -- 候选顺序 = 预算不够时先比谁。
+    -- 旧顺序把"侧向/反向"排在 8 方向之前，实测 60% 的接管只比了 1~3 个候选就下手。
+    -- 但几何解（垂直于来袭速度）本身就是代价最低的撤离方向，不能推到后面 —— 
+    -- 否则搜寻被截断时会连撤离方向都没算。
+    -- 因此：旧命令(防抖) → 几何解 → 8 方向(按与玩家输入接近度排序) → 短脉冲 → 停住。
+    -- "不要为了边际收益把方向掰到玩家意图之外"由 better() 的 riskTieEpsilon 负责。
+    if memory.last and memory.last:Length()>0.99 then add(memory.last,horizon) end
     local hit=base.hitEntry
     local axis=hit and hit.vel or p.velocity
     if axis:Length()<0.01 and hit then axis=hit.pos-p.position end
-    if memory.last and memory.last:Length()>0.99 then add(memory.last,horizon) end
     if axis:Length()>0.01 then
         axis=axis:Normalized()
         local side=Vector(-axis.Y,axis.X)
@@ -236,17 +295,31 @@ function Planner.run(state,deps,frame)
         local angle=i*math.pi/4
         directions[#directions+1]=Vector(math.cos(angle),math.sin(angle))
     end
+    if nominalLen>0.01 then
+        -- 贴近玩家意图的方向先比：被截断时优先给最小偏离的选项
+        table.sort(directions,function(a,b) return distance(a,nominal)<distance(b,nominal) end)
+    end
     -- 完整撤离与较早恢复原输入都使用全力度，兼顾狭小空间。
     for _,u in ipairs(directions) do add(u,horizon) end
     for _,u in ipairs(directions) do add(u,math.min(6,horizon)) end
+    -- 零向量仍保留（有效刹车），但提交时受"玩家有输入就不许按住"约束
     add(Vector(0,0),horizon)
     metrics.candidates=#candidates
     for i=1,#candidates do
         if Isaac.GetTime()>=deadline or metrics.checks>=workLimit then metrics.complete=false; break end
         local c=evaluate(candidates[i],false)
         if not c then break end
-        if not c.blocked and (best.blocked or c.risk<best.risk-0.05
-            or (math.abs(c.risk-best.risk)<=0.05 and c.cost<best.cost)) then best=c end
+        if better(c,best) then best=c end
+        if not isZero(c.u) and better(c,bestNonZero) then bestNonZero=c end
+    end
+    -- 玩家有输入时不允许用零向量把玩家按住（回放实测 15.2% 的接管帧输出全零，
+    -- 就是"上下左右都不能动"）。零向量只在"没有任何非零且非硬否决的候选"时才可用。
+    if nominalLen>0.05 and isZero(best.u) then
+        if not isZero(base.u) and not base.blocked then best=base end
+        if bestNonZero.id~=0 and not bestNonZero.blocked and better(bestNonZero,best) then
+            best=bestNonZero
+        end
+        if not isZero(best.u) then metrics.zeroBrakeReplaced=true end
     end
     if best.id==0 and (m.blockedFrames>=(cfg.stuckFrames or 6) or memory.failed>=3)
         and Isaac.GetTime()<deadline then
@@ -255,7 +328,7 @@ function Planner.run(state,deps,frame)
         if dir and Isaac.GetTime()<deadline then
             local c=evaluate({id=#candidates+1,u=Reader.executable(dir),duration=horizon},false)
             metrics.candidates=metrics.candidates+1
-            if c and not c.blocked and (best.blocked or c.risk<best.risk-0.05) then best=c end
+            if c and better(c,best) then best=c end
         end
     end
     -- 必须带来可观的风险下降；禁止仅为密度/终点偏好而接管。

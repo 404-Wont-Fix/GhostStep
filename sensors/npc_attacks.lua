@@ -69,18 +69,37 @@ local function getPlayerPosition()
     return nil
 end
 
+--- 走廊长度：沿 dir 采样到房间外（墙）为止。
+--- 旧实现固定 pathLength=160 直接把整条射线当致死区；按实际到墙距离缩短后
+--- 才能"在机关面前穿过去"（间隔大时留出可穿越窗口）。
+local function corridorLength(room, pos, dir, maxLen)
+    if not room or not room.IsPositionInRoom or not dir then return maxLen end
+    local step = 16
+    local d = step
+    while d <= maxLen do
+        local ok, inside = pcall(function() return room:IsPositionInRoom(pos + dir * d, 0) end)
+        if not ok or not inside then return d end
+        d = d + step
+    end
+    return maxLen
+end
+
 --- Build tracker entry from attack detection
 --- Returns {pos, vel, speed, radius, kind, fuseFrames?, appearFrame?, ...} or nil
-local function buildEntry(entity, attackEntry, frame)
+local function buildEntry(entity, attackEntry, frame, config)
     local cat=attackEntry.category
     local profile=Profiles.categories[cat]
     if not profile then return nil end
     local okFrame,animFrame=pcall(function() return entity:GetSprite():GetFrame() end)
     animFrame=okFrame and type(animFrame)=="number" and animFrame or 0
     local remaining=math.max(0,(attackEntry.windupFrames or 0)-animFrame)
+    local radius=profile.radius or getJumpRadius(entity.Type)
+    if cat=="ranged" and config and config.rangedCorridorRadius then
+        radius=config.rangedCorridorRadius
+    end
     local entry={index=entity.Index+10000,seed=entity.InitSeed,sourceIndex=entity.Index,
         entityType=entity.Type,variant=entity.Variant,kind=profile.kind,
-        pos=entity.Position,vel=Vector(0,0),speed=0,radius=profile.radius or getJumpRadius(entity.Type),
+        pos=entity.Position,vel=Vector(0,0),speed=0,radius=radius,
         fuseFrames=remaining,appearFrame=frame+remaining,
         endFrame=frame+math.max(1,(attackEntry.totalFrames or animFrame+6)-animFrame),
         predicted=true,animation=attackEntry.name,animationFrame=animFrame,
@@ -100,7 +119,17 @@ local function buildEntry(entity, attackEntry, frame)
             if not target then return nil end
             dir=(target-entry.pos):Normalized()
         end
-        entry.length=profile.pathLength or 480
+        local maxLen=profile.pathLength or 480
+        if config and config.rangedCorridorMaxLen and cat=="ranged" then
+            maxLen=config.rangedCorridorMaxLen
+        end
+        local room
+        local okGame, game = pcall(Game)
+        if okGame and game then
+            local okGet, r = pcall(function() return game:GetRoom() end)
+            if okGet then room = r end
+        end
+        entry.length=(cat=="ranged") and corridorLength(room,entry.pos,dir,maxLen) or maxLen
         entry.endPos=entry.pos+dir*entry.length
         entry.targetMode=entry.confidence>0.6 and "animation_direction" or "player_estimate"
     end
@@ -138,7 +167,7 @@ function NpcAttackSensor.collect(player, tracker, frame, config)
             if animLower ~= "" and not isExcludedAnimation(animLower) then
                 local attackEntry = findAttackEntry(e.Type, e.Variant, animLower)
                 if attackEntry then
-                    local okBuild, entry = pcall(buildEntry, e, attackEntry, frame)
+                    local okBuild, entry = pcall(buildEntry, e, attackEntry, frame, config)
                     if okBuild and entry then
                         count = count + 1
                         entries[count] = entry

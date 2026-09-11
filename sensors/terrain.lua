@@ -6,20 +6,46 @@ local function walkable(c, fly)
     if c == C.COLLISION_SOLID or c == C.COLLISION_WALL then return false end
     return fly or (c ~= C.COLLISION_OBJECT and c ~= C.COLLISION_PIT)
 end
+--- 门格豁免：门格位置在房间形状之外（IsPositionInRoom 为假），但玩家合法可站。
+--- 旧实现把门格当墙 → 玩家进门洞就被判"在墙里 18px"，规划器在该状态整体失效。
+--- 回放实测：门格被误判 5167 格次（collision=5 全部 walkable=0）；
+--- 15 个受击快照里 9 个正处于这个状态。两个信号任一成立即豁免：
+---   1) 碰撞类 = WALL_EXCEPT_PLAYER（引擎明确表示"只挡非玩家"）
+---   2) Room:GetDoor(slot).Position 落在该格（部分房间门格报 COLLISION_WALL）
+local function doorCellsOf(room, total)
+    local cells
+    if room.GetDoor and room.GetGridIndex then
+        for slot = 0, 7 do
+            local ok, door = pcall(function() return room:GetDoor(slot) end)
+            if ok and door and door.Position then
+                local okIdx, idx = pcall(function() return room:GetGridIndex(door.Position) end)
+                if okIdx and type(idx) == "number" and idx >= 0 and idx < total then
+                    cells = cells or {}
+                    cells[idx] = true
+                end
+            end
+        end
+    end
+    return cells
+end
+
 function Terrain.create()
-    return setmetatable({valid=false, grid={}, sizeX=0, sizeY=0, revision=0}, {__index=Terrain})
+    return setmetatable({valid=false, grid={}, sizeX=0, sizeY=0, revision=0, doorCells=nil},
+        {__index=Terrain})
 end
 function Terrain.build(self, room, fly, config)
     if not room then return false end
     local total, width = room:GetGridSize(), room:GetGridWidth()
     if not total or not width or width <= 0 or total <= 0 then return false end
     local grid, changed = self.grid, not self.valid or self.canFly ~= fly
+    local doorCells = doorCellsOf(room, total)
     for index = 0, total - 1 do
         local g = room:GetGridEntity(index)
         local collision = g and g.CollisionClass or C.COLLISION_NONE
         if room.GetGridCollision then collision = room:GetGridCollision(index) end
         local typ = g and g:GetType()
-        local inside = not room.IsPositionInRoom or room:IsPositionInRoom(room:GetGridPosition(index), 0)
+        local door = (doorCells and doorCells[index]) or collision == C.COLLISION_WALL_EXCEPT_PLAYER
+        local inside = door or not room.IsPositionInRoom or room:IsPositionInRoom(room:GetGridPosition(index), 0)
         local pass = inside and walkable(collision, fly)
         local danger
         if g and config.hazardSpikes and not fly then
@@ -40,6 +66,7 @@ function Terrain.build(self, room, fly, config)
     for i=total+1,#grid do grid[i]=nil end
     self.grid, self.sizeX, self.sizeY = grid, width, math.ceil(total/width)
     self.topLeft = room:GetGridPosition(0) - Vector(20,20)
+    self.doorCells = doorCells
     self.room, self.canFly, self.valid = room, fly, true
     self.roomIndex = Game():GetLevel():GetCurrentRoomIndex()
     if changed then self.revision = self.revision + 1 end
@@ -70,35 +97,59 @@ function Terrain.dangerAt(self,p)
     local idx=self:cellAt(p)
     return idx and self.grid[idx] and self.grid[idx].danger or nil
 end
--- 返回重叠深度。足迹与实心格子用圆-AABB，允许沿墙滑动。
-function Terrain.penetration(self,p,r,includeDanger)
-    if not self.valid then return 0 end
+--- 当前位置是否落在门格上（门洞是合法位置，不算穿墙）
+function Terrain.isDoorAt(self,p)
+    local idx = self:cellAt(p)
+    if idx == nil then return false end
+    if self.doorCells and self.doorCells[idx] then return true end
+    local c = self.grid[idx]
+    return c ~= nil and c.collision == C.COLLISION_WALL_EXCEPT_PLAYER
+end
+-- 一次扫描同时得到两个深度：硬地形（墙/坑/石头）与软危险（地刺/TNT）。
+-- 拆开才能让地刺从"一击否决"变成"带代价可穿越"。
+-- 返回 hardDepth, dangerDepth
+function Terrain.probe(self,p,r)
+    if not self.valid then return 0,0 end
     r = r or 0
     local left,top = self.topLeft.X,self.topLeft.Y
-    local depth = math.max(0,left+r-p.X,top+r-p.Y,p.X+r-left-self.sizeX*CELL,p.Y+r-top-self.sizeY*CELL)
-    if self.room and self.room.IsPositionInRoom and not self.room:IsPositionInRoom(p,r) then
+    local hard = math.max(0,left+r-p.X,top+r-p.Y,p.X+r-left-self.sizeX*CELL,p.Y+r-top-self.sizeY*CELL)
+    local danger = 0
+    if self.room and self.room.IsPositionInRoom and not self.room:IsPositionInRoom(p,r)
+        and not self:isDoorAt(p) then
         -- 对 L 形房间仍使用引擎边界；避免只检查包围矩形。
-        depth = math.max(depth, 1)
+        hard = math.max(hard, 1)
     end
     local x0,x1=math.floor((p.X-r-left)/CELL),math.floor((p.X+r-left)/CELL)
     local y0,y1=math.floor((p.Y-r-top)/CELL),math.floor((p.Y+r-top)/CELL)
     for y=math.max(0,y0),math.min(self.sizeY-1,y1) do
         for x=math.max(0,x0),math.min(self.sizeX-1,x1) do
             local c=self.grid[y*self.sizeX+x+1]
-            if not c or not c.walkable or (includeDanger and c.danger) then
+            if c and (not c.walkable or c.danger) then
                 local ax,ay=left+x*CELL,top+y*CELL
                 local dx=math.max(ax-p.X,0,p.X-ax-CELL)
                 local dy=math.max(ay-p.Y,0,p.Y-ay-CELL)
                 local d=math.sqrt(dx*dx+dy*dy)
                 local pen=r-d
                 if d==0 then pen=r+math.min(p.X-ax,ax+CELL-p.X,p.Y-ay,ay+CELL-p.Y) end
-                depth=math.max(depth,pen)
+                if not c.walkable then hard=math.max(hard,pen) end
+                if c.danger then danger=math.max(danger,pen) end
             end
         end
     end
-    return depth
+    return hard, danger
 end
-function Terrain.isSafeAt(self,p,r) return self:penetration(p,r,true)<=0 end
+-- 返回重叠深度。足迹与实心格子用圆-AABB，允许沿墙滑动。
+-- includeDanger=true（默认行为）时地刺/TNT 也算在内。
+function Terrain.penetration(self,p,r,includeDanger)
+    local hard,danger=self:probe(p,r)
+    if includeDanger then return math.max(hard,danger) end
+    return hard
+end
+function Terrain.isSafeAt(self,p,r,includeDanger)
+    local hard,danger=self:probe(p,r)
+    if includeDanger==false then return hard<=0 end
+    return hard<=0 and danger<=0
+end
 function Terrain.segmentSafe(self,a,b,r,includeDanger,startDepth,endDepth)
     local steps=math.max(1,math.ceil(a:Distance(b)/math.max(2,math.min(8,(r or 8)*0.5))))
     -- 规划器已算过两端足迹，复用结果避免每个候选重复调用引擎边界 API。
@@ -124,5 +175,5 @@ function Terrain.minWallDistance(self,p,r)
     end
     return best
 end
-function Terrain.invalidate(self) self.valid=false; self.room=nil end
+function Terrain.invalidate(self) self.valid=false; self.room=nil; self.doorCells=nil end
 return Terrain

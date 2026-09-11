@@ -9,6 +9,21 @@ local ButtonAction = ButtonAction
 local InputHook = InputHook
 local EntityType = EntityType
 
+--- 混合：把 AI 方向按权重叠到玩家输入上，而不是整根抽走玩家输入。
+--- out = (1-w)*玩家输入 + w*AI方向，限幅到 1（不放大）。
+--- w 来自 control.blendWeight（≤ maxDodgeWeight，原则2 永不 1.0）。
+--- 玩家完全不动时 AI 方向也只占 w：保留"永不接管"语义，
+--- 同时"停止"会退化为轻微刹车而不是硬锁方向（原则5 最小必要修正）。
+--- blendWeight/playerDir 缺失时退回原始行为（纯 AI 方向）。
+local function blend(control, dir)
+    local w = control.blendWeight
+    local playerDir = control.playerDir
+    if not w or w <= 0 or not playerDir then return dir end
+    local mixed = playerDir * (1 - w) + dir * w
+    if mixed:Length() > 1 then mixed = mixed:Normalized() end
+    return mixed
+end
+
 --- MC_INPUT_ACTION 回调主体
 --- control: state.control 引用 { active, direction, weight, frame }
 function InputWriter.onInputAction(control, observationMode, entity, inputHook, action)
@@ -30,6 +45,7 @@ function InputWriter.onInputAction(control, observationMode, entity, inputHook, 
 
     local dir = control.direction
     if not dir then return nil end -- 零向量是有效的减速/停止命令。
+    dir = blend(control, dir)
 
     -- 按轴提取分量（由 input_reader 提供统一的轴值函数）
     local InputReader = require("control/input_reader")

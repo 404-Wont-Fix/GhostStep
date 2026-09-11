@@ -82,7 +82,9 @@ function Runtime.create(config)
         control = {
             active = false,     -- 本帧是否介入
             direction = Vector(0, 0), -- 合成后的输出方向
-            weight = 0,         -- 本帧权重
+            weight = 0,         -- 本帧权重（诊断：AI 方向与玩家输入的偏离度）
+            blendWeight = 0,    -- AI 方向在最终输入中的占比（≤ maxDodgeWeight）
+            playerDir = nil,    -- 本帧玩家原始输入（限幅后），混合层用
             frame = -1,         -- 决策帧号（超时失效保护）
             wallDist = -1,      -- 本帧玩家离墙距离（9999=地形无效；录制/归因共用）
         },
@@ -143,6 +145,7 @@ function Runtime.suspendThreat(state)
     state.control.active = false
     state.control.direction = Vector(0, 0)
     state.control.weight = 0
+    state.control.blendWeight = 0
     state.control.frame = -1
     state.control.hookSeen = false
     state.control.wallDist = -1

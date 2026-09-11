@@ -34,12 +34,15 @@ Profiles.categories = {
         pathLength  = 480,  -- LASER_WINDUP_LENGTH (pixels)
     },
 
-    -- Shooter windup (Horf, Gatling Gurdy, etc.)
+    -- Shooter windup (Horf, Gatling Gurdy, 恒定石像 Constant Stone Shooter...)
     -- Corridor capsule toward the player
+    -- 半宽 22 → 8：实测石块半径只有 ~5px，旧值 22 加上玩家 10 + margin 后
+    -- 离射线 34px 就判危险，会把"从机关前经过"整条封死（玩家反馈）。
+    -- 长度改为运行时按"到墙距离"计算（见 sensors/npc_attacks.lua），这里只留上限。
     ranged = {
         kind        = "laser",      -- uses laser collision geometry (line segment)
-        radius      = 22,           -- corridor half-width
-        pathLength  = 160,          -- corridor length
+        radius      = 8,            -- corridor half-width
+        pathLength  = 240,          -- corridor length upper bound
     },
 }
 

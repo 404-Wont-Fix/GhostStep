@@ -17,7 +17,9 @@ function Escape.suggest(p,terrain,hazards,frame,limit,deadline,prepared)
             if nx>=0 and ny>=0 and nx<terrain.sizeX and ny<terrain.sizeY and not seen[idx] then
                 seen[idx]=true
                 local pos=terrain:cellCenter(nx,ny)
-                if terrain:isSafeAt(pos,p.radius) and terrain:segmentSafe(node.pos,pos,p.radius,true) then
+                -- 只按硬地形连通性搜索（地刺现在是代价而不是墙），
+                -- 否则地刺环/地刺带内部会被当成"无出口"。踩刺格降分但仍可达。
+                if terrain:isSafeAt(pos,p.radius,false) and terrain:segmentSafe(node.pos,pos,p.radius,false) then
                     local first=node.first or pos
                     queue[#queue+1]={index=idx,pos=pos,first=first,depth=node.depth+1}
                     local t=math.min(24,(node.depth+1)*40/math.max(1,(p.moveSpeed or 1)*6))
@@ -35,7 +37,8 @@ function Escape.suggest(p,terrain,hazards,frame,limit,deadline,prepared)
                     end
                     local intent=p.inputDir or Vector(0,0)
                     local delta=first-p.position
-                    local score=clearance+exits*3-node.depth*2+(delta:Normalized().X*intent.X+delta:Normalized().Y*intent.Y)*4
+                    local costCell=terrain.dangerAt(pos) and -12 or 0
+                    local score=clearance+exits*3-node.depth*2+costCell+(delta:Normalized().X*intent.X+delta:Normalized().Y*intent.Y)*4
                     if score>bestScore then best,bestScore=first,score end
                 end
             end
