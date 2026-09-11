@@ -24,15 +24,30 @@ end
 -- 这部分，于是“斜向擦着角过去”被判成安全（回放/闭环复现里就是这种碰撞）。
 -- 一段位移只有几像素（≤6px/帧），取两端点+中点的最小值即可覆盖。
 local function boxClearance(px,py,qx,qy,cx,cy,half,r)
-    local best=math.huge
-    for _,t in ipairs({0,0.5,1}) do
-        local x,y=px+(qx-px)*t,py+(qy-py)*t
-        local dx=math.max(math.abs(x-cx)-half,0)
-        local dy=math.max(math.abs(y-cy)-half,0)
-        local d=math.sqrt(dx*dx+dy*dy)-r
+    -- 一段位移只有几像素（≤6px/帧），取两端点+中点覆盖；不构造临时表（每帧要算几十万次）
+    local best
+    do
+        local dx,dy=math.abs(px-cx)-half,math.abs(py-cy)-half
+        if dx<0 then dx=0 end
+        if dy<0 then dy=0 end
+        best=math.sqrt(dx*dx+dy*dy)
+    end
+    do
+        local mx,my=(px+qx)*0.5,(py+qy)*0.5
+        local dx,dy=math.abs(mx-cx)-half,math.abs(my-cy)-half
+        if dx<0 then dx=0 end
+        if dy<0 then dy=0 end
+        local d=math.sqrt(dx*dx+dy*dy)
         if d<best then best=d end
     end
-    return best
+    do
+        local dx,dy=math.abs(qx-cx)-half,math.abs(qy-cy)-half
+        if dx<0 then dx=0 end
+        if dy<0 then dy=0 end
+        local d=math.sqrt(dx*dx+dy*dy)
+        if d<best then best=d end
+    end
+    return best-r
 end
 G.pointSegmentDistance=pointSeg
 function G.window(e,frame)

@@ -494,6 +494,28 @@ test('flying player is not shoved off ground obstacles',function()
     local st2=state(); st2.player.position=Vector(178,160); st2.player.inputDir=Vector(1,0)
     run(st2,{},tWalk,10)
     assert(st2.decision.metrics.initialPenetration>0,'walking into a rock still registers penetration')
+    -- 飞行例外（wiki/Flight）: 柱子飞不过去；尖刺岩石/ TNT 能飞过但仍会受伤；地刺免疫
+    local function gridRoom(coll,typ)
+        return {GetGridWidth=function() return 3 end,GetGridSize=function() return 9 end,
+            GetGridPosition=function(_,i) return Vector(i%3*40,math.floor(i/3)*40) end,
+            GetGridEntity=function(_,i)
+                if i==4 then return {CollisionClass=coll,State=0,VarData=1,GetType=function() return typ end} end
+                return nil
+            end}
+    end
+    local function centre(coll,typ,fly)
+        local t=Terrain.create(); t:build(gridRoom(coll,typ),fly,cfg); return t
+    end
+    local tPillar=centre(GridCollisionClass.COLLISION_SOLID,24,true)
+    assert(not tPillar:isSafeAt(Vector(40,40),10,false),'flight cannot pass over a pillar (GRID_PILLAR=24)')
+    local tRockSpike=centre(GridCollisionClass.COLLISION_SOLID,GridEntityType.GRID_ROCK_SPIKED,true)
+    assert(tRockSpike:isSafeAt(Vector(40,40),10,false),'flight passes over a spiked rock')
+    assert(not tRockSpike:isSafeAt(Vector(40,40),10),'spiked rock still damages a flying player')
+    local tTnt=centre(GridCollisionClass.COLLISION_OBJECT,GridEntityType.GRID_TNT,true)
+    assert(tTnt:isSafeAt(Vector(40,40),10,false) and not tTnt:isSafeAt(Vector(40,40),10),
+        'flying over TNT: passable but still dangerous')
+    local tSpike=centre(GridCollisionClass.COLLISION_NONE,GridEntityType.GRID_SPIKES,true)
+    assert(tSpike:isSafeAt(Vector(40,40),10),'flight is immune to spikes')
 end)
 test('fireplace corner is dangerous and the planner evaluates the blended output',function()
     -- 火堆是方形（半边长 = MAX(Size,16)），4 个角伸到约 23px；只用内切圆会把这些角

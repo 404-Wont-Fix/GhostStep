@@ -100,13 +100,17 @@ _G.EntityType = setmetatable({
     ENTITY_BOMB = 4, ENTITY_LASER = 7, ENTITY_KNIFE = 8,
     ENTITY_PROJECTILE = 1000, ENTITY_EFFECT = 1000, ENTITY_NPC = 33,
 }, { __index = function() return 0 end })
+-- 真机值（游戏 resources/scripts/enums.lua）。历史 mock 用的是另一套编号，
+-- 导致离线复现工具必须覆盖枚举；这里直接对齐真机，避免两套编号。
 _G.GridEntityType = setmetatable({
-    GRID_SPIKES = 15, GRID_SPIKES_ONOFF = 16, GRID_ROCK_SPIKED = 17,
-    GRID_TNT = 12, GRID_SPIDERWEB = 18,
+    GRID_ROCK = 2, GRID_ROCK_ALT = 6, GRID_PIT = 7,
+    GRID_SPIKES = 8, GRID_SPIKES_ONOFF = 9, GRID_SPIDERWEB = 10,
+    GRID_TNT = 12, GRID_POOP = 14, GRID_WALL = 15, GRID_DOOR = 16,
+    GRID_PILLAR = 24, GRID_ROCK_SPIKED = 25,
 }, { __index = function() return 0 end })
 _G.GridCollisionClass = setmetatable({
-    COLLISION_NONE = 0, COLLISION_SOLID = 1, COLLISION_WALL = 2,
-    COLLISION_PIT = 3, COLLISION_OBJECT = 4,
+    COLLISION_NONE = 0, COLLISION_PIT = 1, COLLISION_OBJECT = 2,
+    COLLISION_SOLID = 3, COLLISION_WALL = 4, COLLISION_WALL_EXCEPT_PLAYER = 5,
 }, { __index = function() return 0 end })
 _G.ButtonAction = setmetatable({
     ACTION_LEFT = 0, ACTION_RIGHT = 1, ACTION_UP = 2, ACTION_DOWN = 3,

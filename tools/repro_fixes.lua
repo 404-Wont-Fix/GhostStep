@@ -20,6 +20,7 @@ GridEntityType.GRID_SPIKES_ONOFF = 9
 GridEntityType.GRID_TNT = 12
 GridEntityType.GRID_DOOR = 16
 GridEntityType.GRID_ROCK_SPIKED = 25
+GridEntityType.GRID_PILLAR = 24
 
 local Defaults = require('config/defaults')
 local Runtime = require('config/runtime')
@@ -60,7 +61,8 @@ local function makeRoom(map)
         end,
         GetGridEntity = function(_, i)
             local c = cells[i + 1]
-            if not c or c.coll == GridCollisionClass.COLLISION_NONE and c.typ == 0 then return nil end
+            -- 真机: 空格返回 nil（不是"GetType()==0 的实体"）
+            if not c or (c.coll == GridCollisionClass.COLLISION_NONE and c.typ == 0) then return nil end
             return { CollisionClass = c.coll, State = 0, VarData = 0,
                 GetType = function() return c.typ end }
         end,

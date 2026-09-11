@@ -2,16 +2,19 @@
 local Terrain = {}
 local CELL = 40
 local C, G = GridCollisionClass, GridEntityType
--- 通行判定。飞行只对“地面障碍”豁免:
---   飞行不能穿房间墙（COLLISION_WALL=4），但能飞过石头/方块/粪便(COLLISION_SOLID=3)、
---   坑(COLLISION_PIT=1)、机器/盆火等(COLLISION_OBJECT=2)。
+-- 柱子（Rep+ GRID_PILLAR=24）: 飞行也不能飞过去。枚举缺失/为 0 时不参与比较
+-- （离线 mock 会把未定义枚举的默认值当 0，否则会误伤所有空格的 GetType()）。
+local PILLAR = G.GRID_PILLAR
+-- 通行判定。飞行只对“地面障碍”豁免（wiki/Flight）:
+--   飞行能飞过石头/方块/粪便(COLLISION_SOLID=3)、坑(COLLISION_PIT=1)、机器/盆火等(OBJECT=2)；
+--   但不能穿房间墙(COLLISION_WALL=4)，Rep+ 也**不能飞过柱子**(GRID_PILLAR=24)。
 -- 历史 bug: 旧实现只豁免 OBJECT/PIT，SOLID 在飞行时仍算墙 —— 飞行角色飞到石头上方
 -- 就被 probe 判成“在墙里 10~30px”，规划器于是拼命把玩家推离石头（回放实测:
 -- 会话 20260911_205153 的 101 个接管帧 100% 是 terrain 触发、0 个真实威胁，
 -- 12 帧输出与玩家输入完全反向，即在“抢操作”）。
-local function walkable(c, fly)
+local function walkable(c, fly, typ)
     if c == C.COLLISION_WALL then return false end
-    if fly then return true end
+    if fly then return not (PILLAR ~= nil and PILLAR ~= 0 and typ == PILLAR) end
     return c ~= C.COLLISION_SOLID and c ~= C.COLLISION_OBJECT and c ~= C.COLLISION_PIT
 end
 --- 门格豁免：门格位置在房间形状之外（IsPositionInRoom 为假），但玩家合法可站。
@@ -54,18 +57,24 @@ function Terrain.build(self, room, fly, config)
         local typ = g and g:GetType()
         local door = (doorCells and doorCells[index]) or collision == C.COLLISION_WALL_EXCEPT_PLAYER
         local inside = door or not room.IsPositionInRoom or room:IsPositionInRoom(room:GetGridPosition(index), 0)
-        local pass = inside and walkable(collision, fly)
+        local pass = inside and walkable(collision, fly, typ)
         -- 飞行时石头/坑不再是硬地形，grid 只留 collision 供诊断。
         local danger
-        if g and config.hazardSpikes and not fly then
-            if ((typ == G.GRID_SPIKES or typ == G.GRID_SPIKES_ONOFF) and (g.State or 0) == 0)
-                or (typ == G.GRID_ROCK_SPIKED and collision ~= C.COLLISION_NONE) then danger = "spike" end
+        -- 地刺: 飞行免疫（wiki/Flight: 不被 creep/spikes 伤害，献祭房地刺除外），
+        -- 但尖刺岩石对飞行仍然造成伤害 → 即使飞行也作为软危险保留。
+        if g and config.hazardSpikes then
+            if (typ == G.GRID_SPIKES or typ == G.GRID_SPIKES_ONOFF) and (g.State or 0) == 0 then
+                if not fly then danger = "spike" end
+            elseif typ == G.GRID_ROCK_SPIKED and collision ~= C.COLLISION_NONE then
+                danger = "spike"
+            end
         end
         -- 已炸毁的 TNT 可能保留 State/VarData 与 GridEntity；无碰撞残骸不能重建障碍。
-        -- 飞行同样能飞过 TNT（地面障碍），否则会重演“被石头推着走”的同类问题。
-        if g and config.hazardTnt and not fly and typ == G.GRID_TNT and collision ~= C.COLLISION_NONE
+        -- 步行时 TNT 是硬障碍；飞行时只降级为软危险 —— 不能再把飞行玩家从格子上推开。
+        if g and config.hazardTnt and typ == G.GRID_TNT and collision ~= C.COLLISION_NONE
             and ((g.State or 0)>1 or (g.VarData or 0)>0) then
-            danger, pass = "tnt", false
+            danger = "tnt"
+            if not fly then pass = false end
         end
         local old = grid[index+1]
         if not old or old.walkable ~= pass or old.danger ~= danger or old.collision ~= collision then changed = true end

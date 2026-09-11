@@ -30,7 +30,8 @@ direction_smooth / input_synthesizer / threat_level / spatial` **都是死代码
 | **部署到游戏**（镜像同步） | `python tools/gs.py 4`（`--dry-run` 预览；`--sync` 不弹菜单，供脚本调用）；双击 `deploy.bat` 等价于同一条命令 |
 | 回放分析（中文 report.md/json + 4 个 csv） | `python tools/analyze_replay.py <回放.jsonl> --output <目录>` |
 | 回放可视化 | `python tools/replay_viewer.py --dir "<Steam>/mods/GhostStep3/recordings" --latest` |
-| **用真实规划器离线复现回放场景** | `python tools/repro_planner.py` |
+| **用真实规划器离线复现回放场景** | `python tools/repro_planner.py`（真实网格 + 回放威胁） |
+| **闭环运动复现**（逐帧重新决策 + 按 `maxDodgeWeight` 混合 + 运动模型积分，带 before/after 扫描） | `python tools/repro_fixes.py` |
 | 生成 `config/build.lua` 指纹 | `python tools/package_mod.py` |
 
 写代码前/后都跑一次测试：`run_smoke.py` 里有 5 条避让行为回归（ALT 键值、门格豁免、
@@ -86,7 +87,11 @@ direction_smooth / input_synthesizer / threat_level / spatial` **都是死代码
    分析前先看 `recording_io_paused` / `recordIoPaused` 字段，别以为"没数据"。
 8. **飞行角色不能只豁免 OBJECT/PIT**：`walkable` 若把 `COLLISION_SOLID`(3) 也算墙，飞行时飞到石头上方
    就会被 `probe` 判成"在墙里 10~30px"，规划器于是拼命把玩家推离石头（会话 20260911_205153 的 101 个
-   接管帧 100% 是 terrain 触发、0 个真实威胁，12 帧输出与玩家输入完全反向）。飞行只挡 `COLLISION_WALL`(4)。
+   接管帧 100% 是 terrain 触发、0 个真实威胁，12 帧输出与玩家输入完全反向）。
+   飞行例外按 wiki/Flight 同步：挡路的只剩房间墙 `COLLISION_WALL`(4) 和**柱子 `GRID_PILLAR`(24)**
+   （Rep+ 明确不能飞过柱子）；地刺对飞行免疫，但**尖刺岩石仍伤害飞行角色** → 飞行时也算软危险；
+   TNT 飞行时降级为软危险（不当硬墙把玩家推开）。比较 `GRID_PILLAR` 前必须排除 0
+   （mock 的枚举 metatable 把未定义枚举当 0，否则会误伤所有空格；`tests/smoke.lua` 现已对齐真机枚举）。
 
 9. **规划器必须评估"实际会执行的方向"**：`input_writer` 输出的是 `(1-w)*玩家 + w*AI`，只验证 AI 原始
    方向会让"验证过的安全方向"被剩余 15% 玩家输入拉回威胁（闭环复现：按住"右"冲向火堆，规划器选
@@ -94,9 +99,10 @@ direction_smooth / input_synthesizer / threat_level / spatial` **都是死代码
 
 10. **离线复现是杀手锏**：`python tools/repro_planner.py` 用 lupa 加载 `tests/smoke.lua` 的 Isaac mock +
    回放里**真实的房间网格**（terrain 事件的 cells），**直接跑改后的 `decision/predictive.lua`**。
-   比人肉推理可靠。注意 mock 里要按真机值覆盖枚举，否则 `walkable()` 会判反：
+   比人肉推理可靠。注意 mock 里的枚举现在已对齐真机（`tests/smoke.lua`）；若自己搭 mock 仍要注意
    `GridCollisionClass` = NONE 0 / PIT 1 / OBJECT 2 / SOLID 3 / WALL 4 / **WALL_EXCEPT_PLAYER 5**；
-   `GridEntityType` = SPIKES 8 / SPIKES_ONOFF 9 / TNT 12 / **FIREPLACE 13（Rep+ 未使用，火堆是实体 33）** / DOOR 16 / ROCK_SPIKED 25。
+   `GridEntityType` = SPIKES 8 / SPIKES_ONOFF 9 / TNT 12 / **FIREPLACE 13（Rep+ 未使用，火堆是实体 33）** /
+   DOOR 16 / **PILLAR 24** / ROCK_SPIKED 25。
 
 ## 6. 已验证的设计决策（不要"修回去"）
 
@@ -114,7 +120,7 @@ direction_smooth / input_synthesizer / threat_level / spatial` **都是死代码
 | **大范围威胁（bomb/laser/半径≥32）动态扩窗 18→30 帧** | 18 帧 ≈ 73px 位移，跑不出 90px 爆圈 → 模型永远看不到可行解 |
 | **ALT = 按一下切换**（`Input.IsButtonPressed` + 软件边缘检测） | `IsButtonTriggered` 在 `MC_POST_PLAYER_UPDATE` 不可靠；`tests/integration.lua` 就断言这个语义 |
 | **机关（石像射手 Type 202）走廊**：半宽 8、长度按实际到墙距离、只在蓄力期生效 | 旧值半宽 22 + 固定长 160 → 离射线 34px 就判危险，把"从机关前经过"整条封死 |
-| **飞行只挡房间墙**（SOLID/PIT/OBJECT/TNT 全部可飞越） | 闭环复现 48 例：旧代码 15 次"把飞行玩家推离石头"，新 0 次；步行对照 2/6 不变 |
+| **飞行只挡房间墙与柱子**（SOLID/PIT/OBJECT 可飞越；地刺免疫、尖刺岩石仍伤害、TNT 降为软危险） | 闭环复现 48 例：旧代码 15 次"把飞行玩家推离石头"，新 0 次；步行对照 2/6 不变 |
 | **火堆 = 方形危险体**（半边长 = MAX(Size,16)，角伸到 22.6） | 内切圆漏掉 4 个角（差 5px）→ "往火堆斜上方/斜下方躲却碰上"；随机位姿闭环：碰火 70/200 → **0/200** |
 | **候选按"混合后的实际输出"评估** | 只验证 AI 原始方向时，15% 的玩家输入会把安全方向拉回威胁（斜向擦边 35% 撞上） |
 | **近失（擦边）只在平手时优先，且要差 ≥2 分才改写** | 擦边 2px 与从容 20px 同 risk → 平手按"贴近意图"选 → 选擦边；但阈值太小会为 0.1px 裕量把方向掰到意图外 |
@@ -183,10 +189,12 @@ direction_smooth / input_synthesizer / threat_level / spatial` **都是死代码
 | 躲避手感不如上一版 | 飞行角色整局被推离石头（本条）+ 擦边解 + 局部搜索 `terrain.dangerAt(pos)` 点调用写错 → `Escape.suggest` 抛错被 SafeCall 吞掉（扫描里 12 次）→ 卡住帧完全没有救援 |
 | 更喜欢斜向、直线倾向变小 | 上述 terrain 推开方向多为其"最省代价的斜向"；随机位姿火堆扫描：斜向输出 46% → 37% |
 
-改动：`sensors/terrain.lua`（飞行豁免 SOLID/PIT/OBJECT/TNT）、`sensors/enemies.lua`（火堆 `box=true`，
-半边长 `MAX(Size,16)`）、`threat/geometry.lua`（圆-方距离 `boxClearance`）、`decision/predictive.lua`
+改动：`sensors/terrain.lua`（飞行只挡 WALL 与 GRID_PILLAR，SOLID/PIT/OBJECT/TNT 可飞越；
+尖刺岩石对飞行仍算软危险）、`sensors/enemies.lua`（火堆 `box=true`，半边长 `MAX(Size,16)`）、
+`threat/geometry.lua`（圆-方距离 `boxClearance`）、`decision/predictive.lua`
 （候选按 `c.eff` 混合后方向评估、近失平手优先 `nearMiss*`）、`decision/local_escape.lua`（`terrain:dangerAt`）、
-`config/defaults.lua`（`nearMissClearance/Risk/TieBreak`）、`tests/*`（新增 3 条回归）、
+`config/defaults.lua`（`nearMissClearance/Risk/TieBreak`）、`tests/*`（新增 4 条回归；
+`tests/smoke.lua` 的 `GridCollisionClass`/`GridEntityType` 改为真机枚举值），
 新增 `tools/repro_fixes.{py,lua}`（闭环运动模拟：每帧重新决策 + 按 `maxDodgeWeight` 混合 + 运动模型积分）。
 
 验证（`python tools/repro_fixes.py`，同一份确定性 PRNG，`git stash` 前后各跑一次）：
