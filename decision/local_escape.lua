@@ -37,7 +37,8 @@ function Escape.suggest(p,terrain,hazards,frame,limit,deadline,prepared)
                     end
                     local intent=p.inputDir or Vector(0,0)
                     local delta=first-p.position
-                    local costCell=terrain.dangerAt(pos) and -12 or 0
+                    -- 踩刺格降分但仍可达。注意 dangerAt 是方法调用
+                    local costCell=terrain:dangerAt(pos) and -12 or 0
                     local score=clearance+exits*3-node.depth*2+costCell+(delta:Normalized().X*intent.X+delta:Normalized().Y*intent.Y)*4
                     if score>bestScore then best,bestScore=first,score end
                 end

@@ -1,7 +1,7 @@
 # AGENTS.md — GhostStep3（以撒的结合：忏悔+ / 预测式人机共驾避让）
 
 > 给在本仓库工作的 AI 代理：先读完这份再动手。包含构建/测试/部署命令、目录职责、
-> **8 条实测踩坑**、以及**已经验证过的设计决策（不要改回去）**。
+> **10 条实测踩坑**、以及**已经验证过的设计决策（不要改回去）**。
 > 所有结论都来自回放数据或离线复现，不要凭直觉推翻——先按第 8 节的口径复核。
 
 ---
@@ -71,6 +71,8 @@ direction_smooth / input_synthesizer / threat_level / spatial` **都是死代码
    查表用游戏自带 `<游戏目录>/resources/scripts/enums.lua`。MCM 的 `KEYBIND_KEYBOARD` 扫 32..400 所以手绑没问题，
    **只有硬写的默认值会错**（历史上的 `toggleKey=56` 就是这么来的，导致按 Alt 从未生效过，回放里 `toggle` 事件数为 0）。
 2. **`Entity.Size` 就是像素半径**：玩家 10、Gaper 13、火堆 ≈16.25、石块 ≈5。旧笔记"火焰范围 >> Size"是误判。
+   （`entities2.xml` 的 `collisionRadius=13` 是**伤害半径**不是 `Entity.Size`：旧代码 `max(Size*2.0, 30)` 在回放里
+   录到恒为 **32.5** → Size = 32.5/2 = 16.25；录到过 30 的那些才是被 MIN 钳死的，别再把 30 当成 Size。）
 3. **`Room:GetGridPosition(i)` 返回格中心**，`Terrain.build` 再 `-Vector(20,20)` 才是 topLeft。
    离线造 room mock 必须按格中心给坐标，否则整张网格平移 20px，复现结果全错（踩过）。
 4. **`Isaac.GetTime()` 只有 1ms 精度**。`deadline=begin+budgetMs` 实际是"跨过一个毫秒刻度就中止"，
@@ -82,7 +84,15 @@ direction_smooth / input_synthesizer / threat_level / spatial` **都是死代码
 7. **回放 `ioPaused` 会丢快照**：慢写盘（>8ms）后只保留关键事件 + 最近一小段普通快照——
    会话 28 的 66000+ 帧只剩 **40 条**快照，但 387 条 terrain / 552 条 avoidance 事件都在。
    分析前先看 `recording_io_paused` / `recordIoPaused` 字段，别以为"没数据"。
-8. **离线复现是杀手锏**：`python tools/repro_planner.py` 用 lupa 加载 `tests/smoke.lua` 的 Isaac mock +
+8. **飞行角色不能只豁免 OBJECT/PIT**：`walkable` 若把 `COLLISION_SOLID`(3) 也算墙，飞行时飞到石头上方
+   就会被 `probe` 判成"在墙里 10~30px"，规划器于是拼命把玩家推离石头（会话 20260911_205153 的 101 个
+   接管帧 100% 是 terrain 触发、0 个真实威胁，12 帧输出与玩家输入完全反向）。飞行只挡 `COLLISION_WALL`(4)。
+
+9. **规划器必须评估"实际会执行的方向"**：`input_writer` 输出的是 `(1-w)*玩家 + w*AI`，只验证 AI 原始
+   方向会让"验证过的安全方向"被剩余 15% 玩家输入拉回威胁（闭环复现：按住"右"冲向火堆，规划器选
+   `(0.71,0.71)` 判安全，实际输出 `(0.75,0.60)` 仍是朝火堆推进，35% 的随机位姿会撞上）。
+
+10. **离线复现是杀手锏**：`python tools/repro_planner.py` 用 lupa 加载 `tests/smoke.lua` 的 Isaac mock +
    回放里**真实的房间网格**（terrain 事件的 cells），**直接跑改后的 `decision/predictive.lua`**。
    比人肉推理可靠。注意 mock 里要按真机值覆盖枚举，否则 `walkable()` 会判反：
    `GridCollisionClass` = NONE 0 / PIT 1 / OBJECT 2 / SOLID 3 / WALL 4 / **WALL_EXCEPT_PLAYER 5**；
@@ -104,6 +114,10 @@ direction_smooth / input_synthesizer / threat_level / spatial` **都是死代码
 | **大范围威胁（bomb/laser/半径≥32）动态扩窗 18→30 帧** | 18 帧 ≈ 73px 位移，跑不出 90px 爆圈 → 模型永远看不到可行解 |
 | **ALT = 按一下切换**（`Input.IsButtonPressed` + 软件边缘检测） | `IsButtonTriggered` 在 `MC_POST_PLAYER_UPDATE` 不可靠；`tests/integration.lua` 就断言这个语义 |
 | **机关（石像射手 Type 202）走廊**：半宽 8、长度按实际到墙距离、只在蓄力期生效 | 旧值半宽 22 + 固定长 160 → 离射线 34px 就判危险，把"从机关前经过"整条封死 |
+| **飞行只挡房间墙**（SOLID/PIT/OBJECT/TNT 全部可飞越） | 闭环复现 48 例：旧代码 15 次"把飞行玩家推离石头"，新 0 次；步行对照 2/6 不变 |
+| **火堆 = 方形危险体**（半边长 = MAX(Size,16)，角伸到 22.6） | 内切圆漏掉 4 个角（差 5px）→ "往火堆斜上方/斜下方躲却碰上"；随机位姿闭环：碰火 70/200 → **0/200** |
+| **候选按"混合后的实际输出"评估** | 只验证 AI 原始方向时，15% 的玩家输入会把安全方向拉回威胁（斜向擦边 35% 撞上） |
+| **近失（擦边）只在平手时优先，且要差 ≥2 分才改写** | 擦边 2px 与从容 20px 同 risk → 平手按"贴近意图"选 → 选擦边；但阈值太小会为 0.1px 裕量把方向掰到意图外 |
 
 ## 7. 已知未修 / 下一步
 
@@ -155,6 +169,40 @@ direction_smooth / input_synthesizer / threat_level / spatial` **都是死代码
 
 验证：Lua 5.1/5.3 全绿（SHARED CONTROL 39 passed）；`repro_planner.py` 在真实网格上确认
 地刺环+炸弹不再输出零向量（改选斜向逃逸 `(-0.71,-0.71)`）、门洞初始穿透 18px→0。
+
+### 2026-09-11（第二次）— 飞行越障 / 火堆方形 / 评估实际输出（用户微信反馈 4 条）
+
+会话 `session_20260911_205153_..._2`（3MB，canFly=true 整局）：650 段避让里 terrain 触发 408 段，
+保留下来的 101 个接管帧 **100% 是 terrain 触发、0 个真实威胁**（`hazards=0`、`initialPenetration` 1~12px），
+12 帧输出与玩家输入完全反向（weight=1.0）= "抢操作"；`metrics.spikeRiskScale=55` 说明是穿透惩罚在驱动。
+
+| 反馈 | 根因 |
+|---|---|
+| 飞行角色靠近石墙也触发避让 | `walkable` 不豁免 `COLLISION_SOLID`(3) → 飞行站在石头上被判"在墙里 10~30px" → `peakDepth*10` 驱动强行推开 |
+| 火堆躲避"往斜上/斜下躲却容易碰上" | (a) 火堆用内切圆（半径 16.25）代替方形，漏掉 4 个角约 5px；(b) 规划器只验证 AI 原始方向，实际输出 `(1-w)*玩家+w*AI` 又被玩家输入拉回火堆；(c) 平手阈值 5 让"差 2px 的擦边解"因更贴近意图而胜出 |
+| 躲避手感不如上一版 | 飞行角色整局被推离石头（本条）+ 擦边解 + 局部搜索 `terrain.dangerAt(pos)` 点调用写错 → `Escape.suggest` 抛错被 SafeCall 吞掉（扫描里 12 次）→ 卡住帧完全没有救援 |
+| 更喜欢斜向、直线倾向变小 | 上述 terrain 推开方向多为其"最省代价的斜向"；随机位姿火堆扫描：斜向输出 46% → 37% |
+
+改动：`sensors/terrain.lua`（飞行豁免 SOLID/PIT/OBJECT/TNT）、`sensors/enemies.lua`（火堆 `box=true`，
+半边长 `MAX(Size,16)`）、`threat/geometry.lua`（圆-方距离 `boxClearance`）、`decision/predictive.lua`
+（候选按 `c.eff` 混合后方向评估、近失平手优先 `nearMiss*`）、`decision/local_escape.lua`（`terrain:dangerAt`）、
+`config/defaults.lua`（`nearMissClearance/Risk/TieBreak`）、`tests/*`（新增 3 条回归）、
+新增 `tools/repro_fixes.{py,lua}`（闭环运动模拟：每帧重新决策 + 按 `maxDodgeWeight` 混合 + 运动模型积分）。
+
+验证（`python tools/repro_fixes.py`，同一份确定性 PRNG，`git stash` 前后各跑一次）：
+
+| 指标 | 旧 | 新 |
+|---|---:|---:|
+| 火堆随机位姿 200 例：碰火 | 70 (35%) | **0 (0%)** |
+| 火堆最小间隙均值 | 10.17px | 12.48px |
+| 火堆斜向输出占比 | 46% | **37%** |
+| 飞行越障 48 例接管次数 | 15 | **0** |
+| 步行对照（应仍脱出） | 2/6 | 2/6 |
+| 规划器异常（被 SafeCall 吞掉） | 12 | **0** |
+| 弹幕 200 例闭环命中 | 0 | 0 |
+
+`python tests/run_smoke.py`：Lua 5.1/5.3 全绿（SHARED CONTROL 41 passed）。另修好 `tools/repro_planner.py`
+里 `analysis/repro_ring.lua` 的失效路径（实际文件在 `tools/repro_planner.lua`）。
 
 ### 更早
 

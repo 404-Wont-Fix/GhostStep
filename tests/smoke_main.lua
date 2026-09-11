@@ -1108,15 +1108,17 @@ check("synth: wall cap relaxed when in danger zone", function()
     assert(math.abs(w2 - 0.85) < 0.001, "danger zone wall cap=0.85, got " .. tostring(w2))
 end)
 
-check("enemy sensor: fireplace uses its own collision size (no inflation)", function()
+check("enemy sensor: fireplace is a square (box) hazard with the flame's half width", function()
     local trk = Tracker.create()
     local function makeSprite(anim)
         return { GetAnimation = function() return anim end }
     end
     SMOKE.entities = {
-        -- 火堆: 判定圈 = 实体自身 Size（与其他传感器一致），不再 ×2.5/×2.0/×1.6。
-        -- 回归背景: 旧实现 max(Size*1.6, 30) 被 MIN=30 钳死，实际半径恒为 30，
-        -- 禁入圈 = 30+10+1.5 = 41.5px > 40px 格距 → 连相邻格一起封死。
+        -- 火堆: 方形碰撞体，半边长 = MAX(实体 Size, 视觉火焰半宽 16)。
+        -- 回归背景1: 旧实现 max(Size*2.0, MIN=30) 被 MIN 钳死，禁入圈 41.5px > 40px 格距
+        --   → 连相邻格一起封死。
+        -- 回归背景2: 只用圆形近似会漏掉方形 4 个角（角伸到 Size√2≈23），“斜向上/下躲”
+        --   会被判成安全（2026-09-11 用户反馈“往火堆斜上方/斜下方躲呕上”）。
         { Type = 33, Index = 840, Position = Vector(100, 0), Velocity = Vector(0, 0),
           Size = 16.25, IsDead = function() return false end,
           GetSprite = function() return makeSprite("Flickering") end },
@@ -1144,9 +1146,22 @@ check("enemy sensor: fireplace uses its own collision size (no inflation)", func
     EnemySensor.collect(nil, trk, 10, { hazardContact = true })
     assert(trk.count == 2, "fireplace tracked: count=" .. trk.count)
     local fp = trk.tracked[840]
-    assert(fp.radius == 16.25, "fireplace radius must equal entity Size, got " .. tostring(fp.radius))
+    assert(fp.radius == 16.25, "fireplace half extent must equal entity Size, got " .. tostring(fp.radius))
+    assert(fp.box == true, "fireplace must be modelled as a square (box) hazard")
     local fpMin = trk.tracked[845]
-    assert(fpMin.radius == 12, "radius floor for missing Size, got " .. tostring(fpMin.radius))
+    assert(fpMin.radius == 16, "flame half-width floor for missing Size, got " .. tostring(fpMin.radius))
+    assert(fpMin.box == true, "floor case must still be a box")
+    -- 方形角不再被当成安全区: 从斜向 45° 接近时，中心到角只有 (16.25+16.25) 的界限
+    local Geo = require("threat/geometry")
+    local fire = { kind = "enemy", box = true, pos = Vector(0, 0), vel = Vector(0, 0), radius = 16.25 }
+    local cache = Geo.prepare(fire, 0, 10)
+    -- 玩家半径 + margin = 11.5；正对方形角、离角 12px → 安全但很近
+    local corner = 16.25 + 12 / math.sqrt(2)
+    local clear = Geo.clearance(fire, corner, corner, corner, corner, 11.5, 0, 0, 0, cache)
+    local round = Geo.clearance(fire, 30, 30, 30, 30, 11.5, 0, 0, 0, cache)
+    local circleOnly = math.sqrt(2 * 30 * 30) - (16.25 + 11.5)
+    assert(math.abs(clear - 0.5) < 0.001, "diagonal box clearance, got " .. tostring(clear))
+    assert(round < circleOnly, "box must be stricter than the inscribed circle near the corners")
     assert(not trk.tracked[841], "dead fireplace excluded")
     assert(not trk.tracked[842], "extinguished fireplace (NoFire) excluded")
     assert(not trk.tracked[843], "extinguished fireplace (NoFire2) excluded")

@@ -475,5 +475,78 @@ test('spike ring with bomb: planner escapes instead of freezing the player',func
     assert(u:Length()>0.9,'escape must be full strength, got '..tostring(u:Length()))
     assert(not (math.abs(u.X)<0.05 and math.abs(u.Y)<0.05),'command must point somewhere')
 end)
+test('flying player is not shoved off ground obstacles',function()
+    -- 回放 20260911_205153: 飞行角色整局都带 canFly=true，101 个接管帧 100% 是
+    -- terrain 触发、0 个真实威胁，12 帧输出与玩家输入完全反向（old walkable 只豁免
+    -- OBJECT/PIT，SOLID 仍算墙 → 飞石头就被判“在墙里 10~30px”）。
+    local cfg=Defaults.get()
+    local r=room(); r.solids[40]=GridCollisionClass.COLLISION_SOLID
+    local tFly=Terrain.create(); tFly:build(r,true,cfg)
+    assert(tFly:isSafeAt(Vector(160,160),10),'rock must be passable while flying')
+    local st=state(); st.player.canFly=true
+    st.player.position=Vector(160,160); st.player.inputDir=Vector(1,0)
+    local u=run(st,{},tFly,10)
+    assert(u==nil and st.decision.reason=='nominal_safe','flying over a rock must not trigger a takeover, got '..tostring(st.decision.reason))
+    assert(st.decision.metrics.initialPenetration==0,'no hard penetration while flying')
+    -- 步行时石头仍然是硬地形（回归保护）
+    local tWalk=Terrain.create(); tWalk:build(r,false,cfg)
+    assert(not tWalk:isSafeAt(Vector(160,160),10),'rock still blocks a walking player')
+    local st2=state(); st2.player.position=Vector(178,160); st2.player.inputDir=Vector(1,0)
+    run(st2,{},tWalk,10)
+    assert(st2.decision.metrics.initialPenetration>0,'walking into a rock still registers penetration')
+end)
+test('fireplace corner is dangerous and the planner evaluates the blended output',function()
+    -- 火堆是方形（半边长 = MAX(Size,16)），4 个角伸到约 23px；只用内切圆会把这些角
+    -- 当成安全区 —— 用户反馈的“往火堆斜上方/斜下方躲却呕上”就是这里。
+    -- 同时归定: 规划器评估的方向必须等于 input_writer 实际输出的混合方向。
+    local cfg=Defaults.get()
+    local fire={id='f:1',index=1,seed=1,kind='enemy',entityType=33,box=true,
+        pos=Vector(240,280),vel=Vector(0,0),speed=0,radius=16.25,damage=1}
+    local function plan(nearMissClearance)
+        local st=state()
+        st.config.nearMissClearance=nearMissClearance
+        st.player.position=Vector(200,280)   -- 火堆左侧 40px
+        st.player.velocity=Vector(0,0)
+        st.player.inputDir=Vector(1,0)       -- 玩家按住“右”，直冲火堆
+        local u=run(st,{fire},nil,10)
+        local trace=st.decision.lastTrace
+        assert(trace and #trace.candidates>2,'must evaluate candidates')
+        local selected
+        for _,c in ipairs(trace.candidates) do if c.id==st.decision.metrics.selectedId then selected=c end end
+        return st,u,trace,selected
+    end
+    local st,u,trace,selected=plan(cfg.nearMissClearance)
+    assert(u and selected,'a head-on run at a fireplace must plan something')
+    local function nearOf(c,floor)
+        if c.hit or not c.clearance or c.clearance>=floor then return 0 end
+        return (floor-c.clearance)*cfg.nearMissRisk
+    end
+    -- 归定 1: 规划器评估的方向 = input_writer 实际输出的混合方向
+    local w,nominal=cfg.maxDodgeWeight,Vector(1,0)
+    for _,c in ipairs(trace.candidates) do
+        assert(c.effX,'candidate trace must record the executed (blended) direction')
+        local ex,ey=(1-w)*nominal.X+w*c.x,(1-w)*nominal.Y+w*c.y
+        local len=math.sqrt(ex*ex+ey*ey)
+        if len>1 then ex,ey=ex/len,ey/len end
+        assert(math.abs(ex-c.effX)<0.001 and math.abs(ey-c.effY)<0.001,
+            'evaluated direction must equal the blended output')
+    end
+    -- 归定 2: 近失（擦边）优先 —— 不能为了“更贴合玩家意图”选只差几 px 的擦边解
+    local grazing
+    for _,c in ipairs(trace.candidates) do
+        if not c.terrain and math.abs(c.risk-selected.risk)<=cfg.riskTieEpsilon then
+            assert(nearOf(c,cfg.nearMissClearance)>=nearOf(selected,cfg.nearMissClearance)-0.001,
+                'a lighter-graze candidate was skipped')
+            if nearOf(c,cfg.nearMissClearance)>0 then grazing=true end
+        end
+    end
+    assert(grazing,'scenario must contain a grazing peer so the rule is exercised')
+    assert(nearOf(selected,cfg.nearMissClearance)==0,'the comfortable direction must be chosen over the graze')
+    assert(selected.clearance and selected.clearance>=cfg.nearMissClearance,'selected path must keep a real margin')
+    -- 关掉近失规则必须退回“擦边但省代价”的选择 → 证明这条规则真的在起作用
+    local _,_,_,selectedOff=plan(0)
+    assert(selectedOff.clearance and selectedOff.clearance>0 and selectedOff.clearance<cfg.nearMissClearance,
+        'without the rule the cheaper graze must win, got clearance '..tostring(selectedOff.clearance))
+end)
 print(string.format('SHARED CONTROL: %d passed, %d failed',checks-failures,failures))
 assert(failures==0,'shared control regressions failed')

@@ -50,6 +50,15 @@ function Defaults.get()
         smoothPenalty = 0.2,
         riskTieEpsilon = 5,         -- 风险平手阈值：差不超过它就按"更贴合玩家意图"选
                                     -- 旧值 0.05 太严：3.44 的边际收益就能把方向翻到意图反面
+        -- 近失（擦边）平手中的优先项：风险差在 riskTieEpsilon 内时，先比擦边程度再比代价。
+        -- 没有它时“夹缝擦过”与“从容通过”风险相同，平手阈值会把方向交给擦边解，
+        -- 体感就是“往威胁斜上方/斜下方躲却呕上”（2026-09-11 用户反馈）。
+        -- 不能计入 risk：riskTieEpsilon=5 会把 12 分的擦边扣分当成平手，又被意图代价盖掉。
+        nearMissClearance = 8,      -- 从容距离（px，已含 hazard 半径+玩家半径+margin）
+        nearMissRisk = 1.5,         -- 每 px 擦边的等值分
+        nearMissTieBreak = 2,       -- 擦边分差至少这么大才改写选择
+                                    -- （≈1.3px 裕量）。阈值太小会为了 0.1px 裕量
+                                    -- 把方向掰到玩家意图之外（实测 (0,1)→(-0.71,0.71)）
         safetyMargin = 1.5,
         stuckFrames = 6,
         escapeMaxNodes = 48,

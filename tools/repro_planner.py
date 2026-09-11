@@ -24,7 +24,7 @@ from lupa import lua51
 
 ROOT = Path(__file__).resolve().parents[1]
 REC = Path(r"D:/SteamLibrary/steamapps/common/The Binding of Isaac Rebirth/mods/GhostStep3/recordings")
-SESSION = REC / "session_20260911_170035_3231274721_26526593_28.jsonl"
+SESSION = REC / "session_20260911_170035_3231274721_26526593_28.jsonl"  # 需存在（真实回放，仅本机）
 
 
 def terrain_for(room_index, max_tick=10**9):
@@ -66,7 +66,7 @@ def main():
     dw, dc, ds = cols(door)
     lua.globals().REPRO_W, lua.globals().REPRO_C, lua.globals().REPRO_S = w, c, s
     lua.globals().REPRO_DW, lua.globals().REPRO_DC, lua.globals().REPRO_DS = dw, dc, ds
-    lua.execute((ROOT / "analysis" / "repro_ring.lua").read_text(encoding="utf-8"))
+    lua.execute((ROOT / "tools" / "repro_planner.lua").read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":

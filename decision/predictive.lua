@@ -12,6 +12,7 @@ local function traceRow(c)
         hit=c.hit,hitId=c.hitId,terrain=c.blocked,complete=c.complete,clearance=c.clearance,
         exposure=c.exposure,exitTime=c.exitTime,terminalRisk=c.terminalRisk,terrainRejected=c.terrainRejected,
         spikeTicks=c.spikeTicks,
+        effX=c.eff and c.eff.X,effY=c.eff and c.eff.Y,
         endX=c.endX,endY=c.endY,plannedDisplacement=c.plannedDisplacement}
 end
 function Planner.run(state,deps,frame)
@@ -78,8 +79,27 @@ function Planner.run(state,deps,frame)
     local spikeContactRisk=cfg.spikeContactRisk or 55
     local spikeRiskPerTick=cfg.spikeRiskPerTick or 0.5
     local nominalLen=nominal:Length()
+    -- 规划器评估的方向 = input_writer 实际会输出的向量 out=(1-w)*玩家输入 + w*AI方向。
+    -- 只评估 AI 原始请求方向不够: 被验证过的“安全方向”会被剩余 15% 的玩家输入拉回威胁
+    -- （闭环复现: 玩家按住“右”冲向火堆时规划器选 (0.71,0.71) 判安全，
+    --   实际输出 (0.75,0.60) 仍朝火堆推进，4 个起始位姿中 3 个在 6~15 帧内撞上）。
+    -- 零向量仍按零评估：保留“有效刹车”语义，不参与混合。
+    local blendW=cfg.maxDodgeWeight or 0.85
+    local nearMissClearance=cfg.nearMissClearance or 8
+    local nearMissRisk=cfg.nearMissRisk or 1.5
+    local nearMissTieBreak=cfg.nearMissTieBreak or 2
+    local function effective(u)
+        if blendW<=0 or blendW>=0.999 or nominalLen<0.01 then return u end
+        local mixed=nominal*(1-blendW)+u*blendW
+        if mixed:Length()>1 then mixed=mixed:Normalized() end
+        return mixed
+    end
     local originalRisk,originalHit
     local function evaluate(c,mandatory)
+        -- c.eff = input_writer 实际会输出的方向（候选与玩家输入混合后）；
+        -- c.u 仍是交给 input_writer 的原始请求方向。
+        local eu=c.eff or effective(c.u)
+        c.eff=eu
         c.complete=true; c.risk=0; c.exposure=0; c.clearance=nil; c.blocked=false
         local x,y,vx,vy=p.position.X,p.position.Y,p.velocity.X,p.velocity.Y
         local points,danger={{x,y}},{}
@@ -87,7 +107,7 @@ function Planner.run(state,deps,frame)
         local peakDepth,spikeTicks=initialDepth,0
         local minX,maxX,minY,maxY=x,x,y,y
         for t=1,horizon do
-            local u=t<=c.duration and c.u or nominal
+            local u=t<=c.duration and eu or nominal
             local nx,ny,nvx,nvy=Motion.step(m,x,y,vx,vy,u)
             if terrain.valid then
                 local pos=Vector(nx,ny)
@@ -168,7 +188,7 @@ function Planner.run(state,deps,frame)
         if peakDepth>0 then c.risk=c.risk+peakDepth*10 end
         -- 地刺/TNT：接触 + 停留计价，而不是一击否决
         if spikeTicks>0 then c.risk=c.risk+spikeContactRisk+spikeTicks*spikeRiskPerTick end
-        local smooth=memory.last and distance(c.u,memory.last)^2 or 0
+        local smooth=memory.lastEff and distance(eu,memory.lastEff)^2 or 0
         local exits=0
         if terrain.valid then
             -- 出口数只看硬地形（地刺现在是可穿行的代价，不算"没有出口"）
@@ -218,9 +238,28 @@ function Planner.run(state,deps,frame)
     -- 旧实现 eps=0.05，导致 3.44 的边际收益就能把方向翻成玩家意图的反面
     -- （实测房间 36：按左、输出 (0.96,-0.29)，下一帧再翻回来 = 手感抽抽）。
     local riskEps=cfg.riskTieEpsilon or 5
+    -- 风险平手阈值 eps：只负责“风险接近就算平手”，平手之后怎么选由下方 order 决定：
+    --   先看擦边程度（nearMiss），再看代价 cost（含玩家意图偏离/方向平滑）。
+    -- 旧实现平手后直接比 cost，于是“差 2px 的擦边解”因为更贴合玩家意图而胜出 ——
+    -- 玩家体感就是“往火堆斜上方/斜下方躲却呕上”（2026-09-11 用户反馈）。
+    -- 注意：擦边不能直接计入 risk —— riskTieEpsilon=5 会把 12 分的擦边扣分当作平手，
+    -- 又被意图代价盖掉（实测 4.1 分擦边扣分完全无效）。
+    local function nearMiss(c)
+        if c.hit or not c.clearance or c.clearance>=nearMissClearance then return 0 end
+        return (nearMissClearance-c.clearance)*nearMissRisk
+    end
     local function better(c,b)
-        return not c.blocked and (b.blocked or c.risk<b.risk-riskEps
-            or (math.abs(c.risk-b.risk)<=riskEps and c.cost<b.cost))
+        if c.blocked then return false end
+        if b.blocked then return true end
+        if c.risk<b.risk-riskEps then return true end
+        if math.abs(c.risk-b.risk)<=riskEps then
+            -- 擦边差距足够大（≥nearMissTieBreak）才改写选择；否则可能为了 0.1px 的裕量
+            -- 把方向掰到意图之外（实测：把 (0,1) 侧向换成 (-0.71,0.71) 只换来 0.11px）。
+            local nc,nb=nearMiss(c),nearMiss(b)
+            if math.abs(nc-nb)>=nearMissTieBreak then return nc<nb end
+            return c.cost<b.cost
+        end
+        return false
     end
     local function finish(reason)
         d.reason=reason
@@ -260,7 +299,7 @@ function Planner.run(state,deps,frame)
     -- 地刺现在是软代价：玩家自愿踩刺时仍不接管，但原输入路径会碰上地刺时必须进入候选比较
     -- （否则 spikes 完全不会被避让 —— 这正是"地刺避让不明显"的原因之一）。
     if not base.hit and initialDepth<=0 and (base.spikeTicks or 0)==0 then
-        memory.failed=0; memory.last=nil; return finish("nominal_safe")
+        memory.failed=0; memory.last=nil; memory.lastEff=nil; return finish("nominal_safe")
     end
     local candidates,seen={},{}
     local function add(u,duration)
@@ -269,7 +308,7 @@ function Planner.run(state,deps,frame)
         local key=string.format("%.3f,%.3f,%d",u.X,u.Y,duration)
         if not seen[key] and #candidates<(cfg.plannerMaxCandidates or 64) then
             seen[key]=true
-            candidates[#candidates+1]={id=#candidates+1,u=u,duration=duration}
+            candidates[#candidates+1]={id=#candidates+1,u=u,duration=duration,eff=effective(u)}
         end
     end
     -- 候选顺序 = 预算不够时先比谁。
@@ -335,11 +374,11 @@ function Planner.run(state,deps,frame)
     local improvement=base.risk-best.risk
     if best.id~=0 and improvement>=math.max(0.5,(base.exposure or 0)*0.1) then
         d.command=best.u; d.dodgeDir=best.u; d.layer="predictive"
-        memory.last=best.u; memory.failed=best.hit and memory.failed+1 or 0
+        memory.last=best.u; memory.lastEff=best.eff; memory.failed=best.hit and memory.failed+1 or 0
         return finish(best.hit and "reduce_exposure" or "safe_evasion")
     end
     memory.failed=memory.failed+1
-    memory.last=nil
+    memory.last=nil; memory.lastEff=nil
     return finish(metrics.complete and "no_improving_action" or "budget_no_improving_action")
 end
 return Planner

@@ -19,6 +19,21 @@ local function circleClearance(kind,px,py,qx,qy,ex,ey,fx,fy,r)
     end
     return clear
 end
+-- 静态方形碰撞体（火堆等格实体）: 玩家中心到 AABB 的距离 - (玩家半径+margin)。
+-- 必须用方形而不能用内切圆: 方形 4 个角伸到 Size*√2 ≈ 1.41×Size，内切圆漏掉
+-- 这部分，于是“斜向擦着角过去”被判成安全（回放/闭环复现里就是这种碰撞）。
+-- 一段位移只有几像素（≤6px/帧），取两端点+中点的最小值即可覆盖。
+local function boxClearance(px,py,qx,qy,cx,cy,half,r)
+    local best=math.huge
+    for _,t in ipairs({0,0.5,1}) do
+        local x,y=px+(qx-px)*t,py+(qy-py)*t
+        local dx=math.max(math.abs(x-cx)-half,0)
+        local dy=math.max(math.abs(y-cy)-half,0)
+        local d=math.sqrt(dx*dx+dy*dy)-r
+        if d<best then best=d end
+    end
+    return best
+end
 G.pointSegmentDistance=pointSeg
 function G.window(e,frame)
     local start=e.appearFrame or (e.fuseFrames and ((e.lastFrame or frame)+e.fuseFrames))
@@ -63,6 +78,11 @@ function G.clearance(e,ax,ay,bx,by,r,t0,t1,frame,cache)
         p1x,p1y=ax+(bx-ax)*(hi-t0)/dt,ay+(by-ay)*(hi-t0)/dt
     end
     if cache and cache.linear then
+        -- 方形危险体（火堆）: 静止，忽略外推速度，按 AABB 算
+        if e.box then
+            local half=(e.radius or 0)+(e.uncertainty or 0)
+            return boxClearance(p0x,p0y,p1x,p1y,cache.x,cache.y,half,r)
+        end
         return circleClearance(e.kind,p0x,p0y,p1x,p1y,
             cache.x+cache.vx*lo,cache.y+cache.vy*lo,
             cache.x+cache.vx*hi,cache.y+cache.vy*hi,r+cache.radius)

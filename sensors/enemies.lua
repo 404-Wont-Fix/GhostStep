@@ -15,13 +15,15 @@ local TYPE_ULTRA_GREED_COIN = 293 -- Ultra Greed 扔的硬币，有接触伤害
 local TYPE_WIZOOB = 219           -- 幽灵敌人，appear 动画时无接触伤害
 local TYPE_FIREPLACE = 33         -- 火堆：静态接触伤害，火焰范围 >> entity.Size
 
--- 火堆危险半径：直接用实体自身 Size（与其他传感器一致）。
--- 历史: 2.5×/2.0×/1.6× 都是对 Size 的膨胀，且 MIN=30 把后两次修正完全钳死；
--- 代价半径 = Size + 玩家半径 10 + safetyMargin 1.5 ≈ 27.5px，而房间格距只有 40px，
--- 半径 30 时禁入圈达 41.5px > 40px → 连相邻格一起封死（用户反馈"范围有点大"）。
--- 实测火堆实体半径：回放里恒为 30（会话28 帧46224）→ Size*1.6 被 MIN 钳死。
--- MIN 只作为 Size 读取失败的兜底（避免半径 0 导致完全不避）。
-local FIREPLACE_RADIUS_MIN = 12
+-- 火堆危险形状：火堆是静态格实体（Type 33），碰撞体是方形，不是圆。
+-- 两个独立事实：
+--   1) entities2.xml / references/GhostStep/data/entities.lua：collisionRadius = 13（所有变体）。
+--      历史注释“回放里恒为 30”其实是旧代码 MAX(Size*2.0, MIN=30) 里 MIN 的值（坑 6）。
+--   2) 绘制火焰约 32px 宽（半宽 16）。只按碰撞半径 13 判会让玩家“看着烧到了却不算”。
+-- 因此方形半边长 = MAX(实体尺寸, 16)，禁入面距 = 16 + 10 + 1.5 = 27.5px < 40px 格距，
+-- 不会连相邻格一起封死；而方形的 4 个角伸到 16√2 ≈ 22.6，正是旧图模型漏掉、
+-- 导致“往火堆斜上方/斜下方躲却呕上”的地方（用户 2026-09-11 反馈）。
+local FIREPLACE_HALF = 16
 
 --- 安全读取动画名称（小写）
 local function safeAnimLower(entity)
@@ -99,15 +101,18 @@ function EnemySensor.collect(player, tracker, frame, config)
         if threatKind then
             count = count + 1
             local radius = e.Size
+            local box = false
             if threatKind == "fireplace" then
-                -- 火堆：接触伤害用实体碰撞半径，不额外膨胀（过大会封死相邻格）
-                radius = math.max(radius or 0, FIREPLACE_RADIUS_MIN)
+                -- 火堆：方形碰撞体（半边长 = MAX(实体尺寸, 视觉火焰半宽 16)）
+                radius = math.max(radius or 0, FIREPLACE_HALF)
+                box = true
             end
             entries[count] = {
                 index = e.Index,
                 seed = e.InitSeed,
                 kind = "enemy",
                 entityType = e.Type,
+                box = box,
                 variant = e.Variant,
                 pos = e.Position,
                 vel = e.Velocity,

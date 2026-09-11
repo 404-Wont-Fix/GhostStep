@@ -2,9 +2,17 @@
 local Terrain = {}
 local CELL = 40
 local C, G = GridCollisionClass, GridEntityType
+-- 通行判定。飞行只对“地面障碍”豁免:
+--   飞行不能穿房间墙（COLLISION_WALL=4），但能飞过石头/方块/粪便(COLLISION_SOLID=3)、
+--   坑(COLLISION_PIT=1)、机器/盆火等(COLLISION_OBJECT=2)。
+-- 历史 bug: 旧实现只豁免 OBJECT/PIT，SOLID 在飞行时仍算墙 —— 飞行角色飞到石头上方
+-- 就被 probe 判成“在墙里 10~30px”，规划器于是拼命把玩家推离石头（回放实测:
+-- 会话 20260911_205153 的 101 个接管帧 100% 是 terrain 触发、0 个真实威胁，
+-- 12 帧输出与玩家输入完全反向，即在“抢操作”）。
 local function walkable(c, fly)
-    if c == C.COLLISION_SOLID or c == C.COLLISION_WALL then return false end
-    return fly or (c ~= C.COLLISION_OBJECT and c ~= C.COLLISION_PIT)
+    if c == C.COLLISION_WALL then return false end
+    if fly then return true end
+    return c ~= C.COLLISION_SOLID and c ~= C.COLLISION_OBJECT and c ~= C.COLLISION_PIT
 end
 --- 门格豁免：门格位置在房间形状之外（IsPositionInRoom 为假），但玩家合法可站。
 --- 旧实现把门格当墙 → 玩家进门洞就被判"在墙里 18px"，规划器在该状态整体失效。
@@ -47,13 +55,15 @@ function Terrain.build(self, room, fly, config)
         local door = (doorCells and doorCells[index]) or collision == C.COLLISION_WALL_EXCEPT_PLAYER
         local inside = door or not room.IsPositionInRoom or room:IsPositionInRoom(room:GetGridPosition(index), 0)
         local pass = inside and walkable(collision, fly)
+        -- 飞行时石头/坑不再是硬地形，grid 只留 collision 供诊断。
         local danger
         if g and config.hazardSpikes and not fly then
             if ((typ == G.GRID_SPIKES or typ == G.GRID_SPIKES_ONOFF) and (g.State or 0) == 0)
                 or (typ == G.GRID_ROCK_SPIKED and collision ~= C.COLLISION_NONE) then danger = "spike" end
         end
         -- 已炸毁的 TNT 可能保留 State/VarData 与 GridEntity；无碰撞残骸不能重建障碍。
-        if g and config.hazardTnt and typ == G.GRID_TNT and collision ~= C.COLLISION_NONE
+        -- 飞行同样能飞过 TNT（地面障碍），否则会重演“被石头推着走”的同类问题。
+        if g and config.hazardTnt and not fly and typ == G.GRID_TNT and collision ~= C.COLLISION_NONE
             and ((g.State or 0)>1 or (g.VarData or 0)>0) then
             danger, pass = "tnt", false
         end
