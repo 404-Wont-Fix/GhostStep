@@ -610,5 +610,38 @@ test('hugging a wall is contact, not penetration (no wall-shoving)',function()
     run(stOld,{},terOld,10)
     assert(stOld.decision.metrics.initialPenetration>0,'legacy behaviour must report the phantom penetration')
 end)
+test('duplicate tracker sample must not turn a straight tear into a parabola',function()
+    -- 回放 220104 受击2 的真实数据：弹幕自报 vel=(0.36,-4.99)（向上直线），
+    -- 但 tracker 把同一位置记进相邻两帧（mod 回调频率高于游戏逻辑更新频率）→
+    -- 二阶差分看起来像 +5px/帧² 的巨大减速 → 抛物线模型把轨迹掰向反方向 →
+    -- 规划器判“无威胁”（nominal_safe）→ 玩家贴脸挨打（19 个受击里 8 个是 nominal_safe）。
+    local Predict=require('threat/projectile_predict')
+    local Future=require('threat/future_motion')
+    local e={kind='projectile',id='p:321',index=321,pos=Vector(284.6,240.2),vel=Vector(0.36,-4.99),
+        radius=5,speed=5,lastFrame=23052,historyCount=3,history={}}
+    local pts={{23050,284.3,245.2},{23051,284.6,240.2},{23052,284.6,240.2}}
+    for i,p in ipairs(pts) do e.history[i]={pos=Vector(p[2],p[3]),vel=Vector(0.36,-4.99),frame=p[1]} end
+    assert(not Predict.isParabolic(e),'duplicate sample must not classify as parabolic')
+    assert(not Predict.isCurved(e),'duplicate sample must not classify as curved')
+    assert(not Predict.isTracking(e),'duplicate sample must not classify as tracking')
+    local p1=Future.pos(e,1,e.lastFrame)
+    assert(p1.Y<e.pos.Y and math.abs(p1.Y-(e.pos.Y-4.99))<0.01,
+        'must extrapolate straight along vel, got y='..tostring(p1.Y))
+    -- 干净的抛物线仍要被识别（不能为了防脏样本把功能一起关掉）
+    local clean={kind='projectile',pos=Vector(0,-7),vel=Vector(0,-4),radius=5,speed=4,
+        lastFrame=3,historyCount=3,history={
+            {pos=Vector(0,0),vel=Vector(0,-4),frame=1},
+            {pos=Vector(0,-4),vel=Vector(0,-3),frame=2},
+            {pos=Vector(0,-7),vel=Vector(0,-2),frame=3}}}
+    assert(Predict.isParabolic(clean),'a real parabola must still be detected')
+    -- 规划器必须看到这次贴脸命中（旧行为是 nominal_safe）
+    local st=state()
+    st.player.position=Vector(290.2,221.2); st.player.velocity=Vector(0.09,-0.09)
+    st.player.inputDir=Vector(0,0)
+    run(st,{e},nil,23052)
+    local hit=st.decision.metrics.nominalHit
+    assert(hit and hit>=0 and hit<=3,'point-blank tear must be predicted as a hit, got '..tostring(hit))
+    assert(st.decision.reason~='nominal_safe','planner must not call this frame safe')
+end)
 print(string.format('SHARED CONTROL: %d passed, %d failed',checks-failures,failures))
 assert(failures==0,'shared control regressions failed')

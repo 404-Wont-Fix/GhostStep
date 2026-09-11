@@ -143,4 +143,27 @@ function Tracker.recent(entry, offset)
     local idx=(entry.historyHead-2-offset)%HISTORY_MAX+1
     return entry.history[idx]
 end
+
+--- 历史样本与“实体自报速度”的一致性校验（供弧线/抛物线/追踪型预测器使用）。
+--- 为什么要这个：mod 的回调频率可能高于游戏逻辑更新频率（双帧计数器），
+--- tracker 会把**同一位置记进相邻两帧**。那时二阶差分看起来像“每帧减速 5px/帧²”的
+--- 巨大加速度，抛物线拟合会把轨迹掰向反方向 ——
+--- 回放 220104 受击2 就是实例：直线下落的弹幕被预测成掉头向下，规划器判“无威胁”，玩家挨打。
+--- 判据：最近一步的位移长度要与自报速度量级相当（0.5~3 倍），否则退回直线外推。
+--- 注：采样间隔本身不可靠（同一帧可能被采集两次），所以只用于剔除脏样本，
+--- 不用它反推速度。
+function Tracker.motionConsistent(entry)
+    local n=entry.historyCount or 0
+    if n<3 then return false end
+    local p1,p2=Tracker.recent(entry,1),Tracker.recent(entry,0)
+    if not p1 or not p2 then return false end
+    local dt=p2.frame-p1.frame
+    if dt<=0 then return false end
+    local vx,vy=entry.vel and entry.vel.X or 0,entry.vel and entry.vel.Y or 0
+    local velLen=math.sqrt(vx*vx+vy*vy)
+    if velLen<=1 then return true end -- 慢速：位置差本来就不准，不做高阶拟合更有意义
+    local sx,sy=(p2.pos.X-p1.pos.X)/dt,(p2.pos.Y-p1.pos.Y)/dt
+    local stepLen=math.sqrt(sx*sx+sy*sy)
+    return stepLen>=velLen*0.5 and stepLen<=velLen*3
+end
 return Tracker

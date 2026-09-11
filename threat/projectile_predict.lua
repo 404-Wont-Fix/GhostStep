@@ -93,6 +93,9 @@ end
 --- curvatureMinOmega: 角速度低于此视为直线
 function Predict.isCurved(entry, minOmega)
     if not entry.history or entry.historyCount < 3 then return false end
+    -- 脏样本（同一位置被记进相邻两帧）会让弧线/抛物线拟合把轨迹掰向反方向
+    -- （回放 220104 受击2: 直线弹幕被预测成掉头 → 规划器判无威胁），必须先过滤
+    if not History.motionConsistent(entry) then return false end
     local h = entry.history
     local n = entry.historyCount
     local c = fitCircle(History.recent(entry,2), History.recent(entry,1), History.recent(entry,0))
@@ -109,6 +112,7 @@ end
 local TRACKING_ANGLE_THRESHOLD = 0.05 -- 每帧转向角阈值（弧度，约3度）
 function Predict.isTracking(entry)
     if not entry.history or entry.historyCount < 3 then return false end
+    if not History.motionConsistent(entry) then return false end
     local h = entry.history
     local n = entry.historyCount
     -- 取最近3个样本的速度方向，检查是否持续转向
@@ -151,6 +155,7 @@ end
 --- 弧线命中检测: 沿圆弧步进采样（步长2帧），返回首帧命中或 nil
 function Predict.timeToHitArc(entry, playerPos, playerVel, playerRadius, horizon)
     if not entry.history or entry.historyCount < 3 then return nil end
+    if not History.motionConsistent(entry) then return nil end
     local h = entry.history
     local n = entry.historyCount
     local c = fitCircle(History.recent(entry,2), History.recent(entry,1), History.recent(entry,0))
@@ -187,6 +192,7 @@ local PARABOLIC_ACCEL_THRESHOLD = 0.3
 --- 优先于圆弧检测：抛物线局部可近似圆弧，但物理特征（恒定加速度方向）更可靠
 function Predict.isParabolic(entry)
     if not entry.history or (entry.historyCount or 0) < 3 then return false end
+    if not History.motionConsistent(entry) then return false end
     local p0 = History.recent(entry,2)
     local p1 = History.recent(entry,1)
     local p2 = History.recent(entry,0)
@@ -230,6 +236,9 @@ end
 --- 同时检测速度反向（抛物线最高点后下落），超过最高点+余量后截断
 function Predict.timeToHitParabolic(entry, playerPos, playerVel, playerRadius, horizon)
     if not entry.history or (entry.historyCount or 0) < 3 then
+        return Predict.timeToHitMoving(entry, playerPos, playerVel, playerRadius, horizon)
+    end
+    if not History.motionConsistent(entry) then
         return Predict.timeToHitMoving(entry, playerPos, playerVel, playerRadius, horizon)
     end
     local p0 = History.recent(entry,2)

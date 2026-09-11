@@ -487,3 +487,36 @@ do
     print(string.format('  飞行时采集到 %d 条（期望 0：飞行免疫地面液体）', trk2.count))
     SMOKE.entities = {}
 end
+
+-- ============================================================
+print()
+print('===== F7: 脏轨迹样本（同一位置记进相邻两帧）不能让直线弹幕掉头 =====')
+do
+    local map = {
+        '###############', '#.............#', '#.............#', '#.............#',
+        '#.............#', '#.............#', '#.............#', '#.............#', '###############',
+    }
+    local room = makeRoom(map)
+    local cfg = Defaults.get(); cfg.budgetMs = 100000
+    local ter = Terrain.create(); ter:build(room, false, cfg)
+    -- 回放 220104 受击2 的真实数据：玩家(290.2,221.2) 静止；弹幕(284.6,240.2) vel=(0.36,-4.99)
+    -- 即贴脸 19px 且每帧接近 5px；但 tracker 历史里第 23051/23052 帧位置相同。
+    local pts = { { 23050, 284.3, 245.2 }, { 23051, 284.6, 240.2 }, { 23052, 284.6, 240.2 } }
+    local e = { id = 'projectile:321:3840938311', index = 321, seed = 3840938311, kind = 'projectile',
+        pos = Vector(284.6, 240.2), vel = Vector(0.36, -4.99), speed = 5, radius = 5, damage = 1,
+        lastFrame = 23052, historyCount = 3, history = {} }
+    for i, p in ipairs(pts) do
+        e.history[i] = { pos = Vector(p[2], p[3]), vel = Vector(0.36, -4.99), frame = p[1] }
+    end
+    local st = newState(cfg, 290.2, 221.2, 0.09, -0.09, 0, 0, false)
+    local u = plan(st, ter, { e }, 23052)
+    local m = st.decision.metrics or {}
+    local Predict = require('threat/projectile_predict')
+    local Future = require('threat/future_motion')
+    local p1 = Future.pos(e, 1, e.lastFrame)
+    print(string.format('  分类: isParabolic=%s isCurved=%s isTracking=%s',
+        tostring(Predict.isParabolic(e)), tostring(Predict.isCurved(e)), tostring(Predict.isTracking(e))))
+    print(string.format('  t=1 预测位置 y=%.1f（真值 %.1f，向上逼近玩家）', p1.Y, e.pos.Y - 4.99))
+    print(string.format('  规划器: 原因=%-24s 预测首碰撞=%s（旧代码 = -1 即“无威胁”） 输出=%s',
+        tostring(st.decision.reason), tostring(m.nominalHit), u and dirName(u) or '不接管'))
+end

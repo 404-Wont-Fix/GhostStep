@@ -113,6 +113,15 @@ direction_smooth / input_synthesizer / threat_level / spatial` **都是死代码
     （Friend Ball/魅惑）生成的水迹要查 `FLAG_FRIENDLY`。飞行时地面液体一律免疫（wiki/Flight），
     但**火堆仍然伤害飞行角色**（别顺手一起豁免）。
 
+13. **tracker 历史里会出现"同一位置记进相邻两帧"的脏样本**（mod 回调频率高于游戏逻辑
+    更新频率）→ 二阶差分看起来像每帧 ±5px 的巨大加速度 → `isParabolic` 命中，抛物线模型
+    （0.5·a·t²）把**直线弹幕的轨迹掰向反方向**，规划器判"无威胁"，玩家贴脸挨打。
+    回放 220104 受击2 就是实例（弹幕 vel=(0.36,-4.99) 直线上升，t=1 预测 y 反而 +2.5）。
+    → `Tracker.motionConsistent()`：最近一步位移要与实体自报速度同量级（0.5~3 倍），
+    否则 `isCurved/isTracking/isParabolic/timeToHit{Arc,Parabolic}` 与
+    `future_motion.getArcParams` 全部退回直线外推。**别把采样间隔当逻辑帧数用**
+    （同一逻辑帧可能被采集两次，`dt` 不可靠；只有实体自报的 `vel` 可信）。
+
 10. **离线复现是杀手锏**：`python tools/repro_planner.py` 用 lupa 加载 `tests/smoke.lua` 的 Isaac mock +
    回放里**真实的房间网格**（terrain 事件的 cells），**直接跑改后的 `decision/predictive.lua`**。
    比人肉推理可靠。注意 mock 里的枚举现在已对齐真机（`tests/smoke.lua`）；若自己搭 mock 仍要注意
@@ -139,6 +148,7 @@ direction_smooth / input_synthesizer / threat_level / spatial` **都是死代码
 | **飞行只挡房间墙与柱子**（SOLID/PIT/OBJECT 可飞越；地刺免疫、尖刺岩石仍伤害、TNT 降为软危险） | 闭环复现 48 例：旧代码 15 次"把飞行玩家推离石头"，新 0 次；步行对照 2/6 不变 |
 | **火堆 = 方形危险体**（半边长 = MAX(Size,16)，角伸到 22.6） | 内切圆漏掉 4 个角（差 5px）→ "往火堆斜上方/斜下方躲却碰上"；随机位姿闭环：碰火 70/200 → **0/200** |
 | **候选按"混合后的实际输出"评估** | 只验证 AI 原始方向时，15% 的玩家输入会把安全方向拉回威胁（斜向擦边 35% 撞上） |
+| **脏轨迹样本不参与高阶拟合**（`Tracker.motionConsistent`） | mod 回调可能比游戏逻辑更新更快 → 同一位置进相邻两帧 → 抛物线拟合把直线弹幕掰成掉头（复现：`isParabolic=true`、规划器 `nominal_safe`；修后直线外推 + `reduce_exposure`） |
 | **贴墙接触不算穿透**（`wallContactSlack=2.0`，只作用于硬地形） | 引擎允许玩家中心贴到距实心格 9.2px，`radius=10` → 贴墙恒有 0.6px 假穿透；抹掉后贴墙不再被推开、钉子逻辑在墙边恢复工作 |
 | **玩家/友方地面液体永不算威胁**（`PLAYER_CREEP_*` + `FLAG_FRIENDLY` 链） | 这些 variant 的生成者常为空 → 旧实现把自己的水迹当敌方避让（复现 4 条 → 2 条） |
 | **飞行免疫地面液体/地刺/TNT，但仍受火堆与尖刺岩石伤害** | wiki/Flight + wiki/TNT（TNT 只在被摧毁时爆炸）；飞行时 TNT 不再当危险 |
@@ -189,9 +199,18 @@ direction_smooth / input_synthesizer / threat_level / spatial` **都是死代码
 | 敌我地面液体 | `PLAYER_CREEP_*`（玩家侧 creep 枚举）生成者常为 0/nil，只按生成者链判归属 → 自己的水迹被当敌方；友方 NPC 水迹同理 | 采集 4 条（含玩家/友方）→ **2 条**（只留敌方/敌对 NPC 生成） |
 | 飞行仍避让地面液体 | `immuneGround` 只覆盖 `CREEP_VARIANTS`，玩家侧 creep 不在表里 | 飞行采集 1 → **0**；火堆仍采集 ✅ |
 
+第三条根因（本轮最后定位，直接对应"躲避不好用"）：**tracker 脏样本把直线弹幕预测成掉头**。
+mod 回调频率可高于游戏逻辑更新频率 → 历史里同一位置进相邻两帧 → 二阶差分像巨大减速 →
+`isParabolic` 命中 → 轨迹被掰向反方向 → 规划器判"无威胁"（19 个受击里 8 个 `nominal_safe`）。
+修：`Tracker.motionConsistent()` 用实体自报速度校验最近一步位移，不过关的退回直线外推；
+`isCurved/isTracking/isParabolic/timeToHit{Arc,Parabolic}` 与 `future_motion.getArcParams` 同步接入。
+复现（回放 220104 受击2 真实数据）：旧 `isParabolic=true`、t=1 预测 y 反向、原因 `nominal_safe` →
+新 `isParabolic=false`、t=1 预测与直线一致、原因 `reduce_exposure`（接管闪开）。
+
 改动：`config/defaults.lua`（`wallContactSlack=2.0`）、`sensors/terrain.lua`（probe 抹掉接触裕量内的
 硬穿透；`self.slack` 记入 refresh 签名；飞行时 TNT 不再算危险）、`sensors/effects.lua`
-（`PLAYER_CREEP_VARIANTS` + `FLAG_FRIENDLY` 链 + 飞行地面免疫）、`tests/*`（mock 的
+（`PLAYER_CREEP_VARIANTS` + `FLAG_FRIENDLY` 链 + 飞行地面免疫）、`entities/tracker.lua` +
+`threat/projectile_predict.lua` + `threat/future_motion.lua`（脏样本一致性校验）、`tests/*`（mock 的
 `GridCollisionClass`/`GridEntityType`/`EntityType`/`EffectVariant` 全部对齐真机枚举值；
 新增贴墙接触、敌我液体、飞行免疫 3 条回归；SHARED CONTROL 42 passed）。
 

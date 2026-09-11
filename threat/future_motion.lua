@@ -68,9 +68,10 @@ local function getArcParams(entry, frame)
     end
     -- 拟合
     local circle = nil
-    if entry.history and entry.historyCount and entry.historyCount >= 3 then
-        local h = entry.history
-        local n = entry.historyCount
+    if entry.history and entry.historyCount and entry.historyCount >= 3
+        and History.motionConsistent(entry) then
+        -- 脏样本过滤（同一位置被记进相邻两帧会让拟合把轨迹掰向反方向，
+        -- 见 entities/tracker.lua motionConsistent 注释）
         circle = fitCircle3(History.recent(entry,2), History.recent(entry,1), History.recent(entry,0))
         if circle and math.abs(circle.omega) < 0.02 then
             circle = nil -- 角速度太低视为直线
