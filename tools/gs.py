@@ -186,7 +186,7 @@ def tool_test(args=None):
 
 # 同步排除清单：**唯一真相源**。deploy.bat 只是启动器，不再自己拼 robocopy 参数，
 # 所以新增开发用文件（文档/工具/测试）只需要改这里一处。
-ROBOCOPY_XD = ["tests", "recordings", ".git", ".claude", "references", "tools"]
+ROBOCOPY_XD = ["tests", "recordings", "analysis", ".git", ".claude", "references", "tools"]
 ROBOCOPY_XF = ["deploy.bat", ".gitignore", "ANALYSIS.md", "AGENTS.md"]
 ROBOCOPY_QUIET = ["/NFL", "/NDL", "/NJH", "/NJS", "/NP"]
 

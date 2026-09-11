@@ -58,6 +58,7 @@ direction_smooth / input_synthesizer / threat_level / spatial` **都是死代码
 
 1. **不硬编码本机路径**（用户明确要求）。运行时数据只写 `recordings/`（用 `metadata.xml` 向上定位 mod 根目录）。
 2. 离线工具放 `tools/`、测试放 `tests/`——两者都不会被部署同步进游戏。
+   `analysis/` 是离线分析产物目录（已在 `.git/info/exclude` 里忽略），同样不部署。
    **部署的排除清单只写在 `tools/gs.py` 的 `ROBOCOPY_XD` / `ROBOCOPY_XF`**（唯一真相源）；
    `deploy.bat` 只是启动器，不要再往 bat 里加 robocopy 参数（历史上有过两份清单走偏的 bug —— 同一
    `AGENTS.md` 只加进 bat 没加进 Python，于是用 Python 工具同步时又被复制进游戏目录）。
