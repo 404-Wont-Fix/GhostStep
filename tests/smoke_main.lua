@@ -317,20 +317,20 @@ check("projectile sensor collect filters+classifies", function()
     local tracker2 = Tracker.create()
     SMOKE.entities = {
         { -- 敌方弹幕(NPC发射) → 采集
-            Type = 1000, Index = 100, Position = Vector(50, 0),
+            Type = EntityType.ENTITY_PROJECTILE, Index = 100, Position = Vector(50, 0),
             Velocity = Vector(-5, 0), Size = 8, SpawnerType = 33,
             IsDead = function() return false end },
         { -- 未知归属弹幕 → 默认敌方 → 采集
-            Type = 1000, Index = 101, Position = Vector(60, 0),
+            Type = EntityType.ENTITY_PROJECTILE, Index = 101, Position = Vector(60, 0),
             Velocity = Vector(-5, 0), Size = 8, SpawnerType = 0,
             IsDead = function() return false end },
         { -- 已死亡弹幕 → 跳过
-            Type = 1000, Index = 102, Position = Vector(0, 0),
+            Type = EntityType.ENTITY_PROJECTILE, Index = 102, Position = Vector(0, 0),
             Velocity = Vector(0, 0), Size = 8, SpawnerType = 0,
             IsDead = function() return true end },
         { -- 玩家发射 → 友方 → 跳过
-            Type = 1000, Index = 103, Position = Vector(70, 0),
-            Velocity = Vector(5, 0), Size = 8, SpawnerType = 9,
+            Type = EntityType.ENTITY_PROJECTILE, Index = 103, Position = Vector(70, 0),
+            Velocity = Vector(5, 0), Size = 8, SpawnerType = EntityType.ENTITY_PLAYER,
             IsDead = function() return false end },
         { -- 非弹幕实体 → 跳过
             Type = 33, Index = 104, Position = Vector(80, 0),
@@ -789,7 +789,7 @@ check("laser sensor filters hostile vs friendly", function()
         { Type = 7, Index = 800, Position = Vector(0, 0), Velocity = Vector(0, 0),
           Size = 8, SpawnerType = 0, IsDead = function() return false end },
         { Type = 7, Index = 801, Position = Vector(10, 0), Velocity = Vector(0, 0),
-          Size = 8, SpawnerType = 9, IsDead = function() return false end }, -- 玩家发射
+          Size = 8, SpawnerType = EntityType.ENTITY_PLAYER, IsDead = function() return false end }, -- 玩家发射
     }
     LaserSensor.collect(nil, trk, 10, { hazardLasers = true })
     assert(trk.count == 1, "hostile only: count=" .. trk.count)
@@ -1166,6 +1166,49 @@ check("enemy sensor: fireplace is a square (box) hazard with the flame's half wi
     assert(not trk.tracked[842], "extinguished fireplace (NoFire) excluded")
     assert(not trk.tracked[843], "extinguished fireplace (NoFire2) excluded")
     assert(not trk.tracked[844], "destroying fireplace (Dissapear) excluded")
+    SMOKE.entities = {}
+end)
+
+check("effect sensor ignores player/friendly ground liquid and flight", function()
+    -- 用户 2026-09-11 反馈：分不清敌方还是友方单位的地面液体（自己的水迹也被避让）。
+    -- PLAYER_CREEP_* 是游戏专为玩家侧 creep 定义的 variant（enums.lua），
+    -- 它们常常 SpawnerType=0/SpawnerEntity=nil → 光靠生成者链判不出来。
+    local trk = Tracker.create()
+    local function friendlyNpc(isFriendly)
+        return { Type = 33, HasEntityFlags = function() return isFriendly end }
+    end
+    local function eff(index, variant, extra)
+        local e = { Type = EntityType.ENTITY_EFFECT, Index = index, Variant = variant,
+            Position = Vector(0, 0), Velocity = Vector(0, 0), Size = 12,
+            IsDead = function() return false end }
+        for k, v in pairs(extra or {}) do e[k] = v end
+        return e
+    end
+    SMOKE.entities = {
+        eff(850, 22),                                            -- 敌方 CREEP_RED → 是威胁
+        eff(851, 46),                                            -- 玩家 PLAYER_CREEP_RED（无生成者）→ 不是
+        eff(852, 22, { SpawnerType = EntityType.ENTITY_FAMILIAR }),  -- 跟班生成 → 不是
+        eff(853, 22, { SpawnerEntity = friendlyNpc(true) }),     -- 友方 NPC（Friend Ball）生成 → 不是
+        eff(854, 22, { SpawnerEntity = friendlyNpc(false) }),    -- 敌对 NPC 生成 → 是威胁
+        eff(855, 22, { HasEntityFlags = function() return true end }), -- 自身带友方标志 → 不是
+    }
+    EffectSensor.collect(nil, trk, 10, { hazardCreep = true })
+    assert(trk.count == 2, "enemy creep only: count=" .. trk.count)
+    assert(trk.tracked[850], "enemy creep tracked")
+    assert(trk.tracked[854], "hostile-npc creep tracked")
+    assert(not trk.tracked[851], "PLAYER_CREEP_* must never be a threat")
+    assert(not trk.tracked[852], "familiar-spawned creep excluded")
+    assert(not trk.tracked[853], "friendly-npc-spawned creep excluded")
+    assert(not trk.tracked[855], "friendly-flagged creep excluded")
+    -- 飞行：地面液体一律免疫（wiki/Flight）
+    local trk2 = Tracker.create()
+    EffectSensor.collect({ canFly = true }, trk2, 10, { hazardCreep = true })
+    assert(trk2.count == 0, "flight immune to creep: count=" .. trk2.count)
+    -- 飞行不等于豁免火堆
+    local trk3 = Tracker.create()
+    SMOKE.entities = { eff(856, 51) } -- HOT_BOMB_FIRE
+    EffectSensor.collect({ canFly = true }, trk3, 10, { hazardCreep = true })
+    assert(trk3.count == 1, "flight must NOT be immune to fire: count=" .. trk3.count)
     SMOKE.entities = {}
 end)
 

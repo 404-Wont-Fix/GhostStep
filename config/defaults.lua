@@ -60,6 +60,12 @@ function Defaults.get()
                                     -- （≈1.3px 裕量）。阈值太小会为了 0.1px 裕量
                                     -- 把方向掰到玩家意图之外（实测 (0,1)→(-0.71,0.71)）
         safetyMargin = 1.5,
+        -- 贴墙接触裕量（px）：硬穿透小于它就当“只是贴着墙”，不算穿透。
+        -- 实测玩家中心距实心格最近 9.2px（player.radius=10）→ 贴墙会算出 0.5~1.2px 假穿透，
+        -- 加上 IsPositionInRoom(p,r) 在边界处的 1px，共约 2px。不抹掉的话：
+        -- ① 贴墙走就拿不到 nominal_safe，triggerKind 永远 terrain（会话 220104: 327/555 段）；
+        -- ② peakDepth*10 把贴墙的玩家推离墙，且 depth>0 会短路“撞墙位置钉住”。
+        wallContactSlack = 2.0,
         stuckFrames = 6,
         escapeMaxNodes = 48,
         terrainRefreshFrames = 3,

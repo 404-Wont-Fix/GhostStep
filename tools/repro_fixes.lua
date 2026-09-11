@@ -41,7 +41,7 @@ local LEGEND = {
 }
 
 --- 15x9 标准房间：外圈墙，内部自由。map 为 9 行字符串
-local function makeRoom(map)
+local function makeRoom(map, strict)
     local cells = {}
     local h = #map
     local w = #map[1]
@@ -71,7 +71,12 @@ local function makeRoom(map)
             return c and c.coll or GridCollisionClass.COLLISION_WALL
         end,
         -- 真机标准可走区域: x∈[60,580] y∈[140,420]
+        -- strict=true 时按"足迹（r=10）必须完全落在可走区内"解释 margin
+        -- （回放 220104 的贴墙假触发里有 105/327 段只能由这一项解释）
         IsPositionInRoom = function(_, p)
+            if strict then
+                return p.X >= 70 and p.X <= 570 and p.Y >= 150 and p.Y <= 410
+            end
             return p.X >= 60 and p.X <= 580 and p.Y >= 140 and p.Y <= 420
         end,
         GetType = function() return 1 end,
@@ -402,4 +407,83 @@ do
     print(string.format('  [飞行越障] %d 例（8 方向 x %d 偏移）接管 %d 次（期望 0）; 步行对照 %d/%d 接管（期望 >0）',
         flyCases, #OFFS, taken, walkTaken, walkCases))
     print(string.format('  [规划器异常] 全扫描共 %d 次（main.lua 用 SafeCall 吞掉 → 该帧不接管）', planErrors))
+end
+
+-- ============================================================
+print()
+print('===== F5: 贴墙/贴石接触（旧代码把 0.6px 足印重叠当穿透并把玩家推开）=====')
+do
+    local rockMap = { '###############', '#.............#', '#.............#', '#.............#',
+        '#....R........#', '#.............#', '#.............#', '#.............#', '###############' }
+    local cfg = Defaults.get(); cfg.budgetMs = 100000
+    local total, taken, shoved = 0, 0, 0
+    local rows = {}
+    for _, strict in ipairs({ false, true }) do
+        local room = makeRoom(rockMap, strict)
+        local ter = Terrain.create(); ter:build(room, false, cfg)
+        -- 石块格 (5,4) AABB = [220,260]x[260,300]；玩家中心距它 9.4px → 足印重叠 0.6px
+        local cases = {
+            { '贴石按向石(右)', 210.6, 280, 0, 0, 1, 0 },
+            { '贴石沿墙(上)', 210.6, 280, 0, 0, 0, -1 },
+            { '贴房间左墙按左', 69.4, 200, 0, 0, -1, 0 },
+            { '贴房间上墙按上', 300, 149.4, 0, 0, 0, -1 },
+            { '空旷处按右(对照)', 240, 200, 0, 0, 1, 0 },
+        }
+        for _, c in ipairs(cases) do
+            total = total + 1
+            local st = newState(cfg, c[2], c[3], c[4], c[5], c[6], c[7], false)
+            local u = plan(st, ter, {}, 18610)
+            if u then
+                taken = taken + 1
+                -- 输出是否把玩家推离接触面（与输入反向或垂直）
+                local dot = u.X * c[6] + u.Y * c[7]
+                if dot < 0.5 then shoved = shoved + 1 end
+                rows[#rows + 1] = string.format('      %s%s → %s', strict and '[strict]' or '', c[1], dirName(u))
+            else
+                rows[#rows + 1] = string.format('      %s%s → 不接管(%s)', strict and '[strict]' or '', c[1], tostring(st.decision.reason))
+            end
+        end
+    end
+    print(string.format('  贴墙/贴石 %d 例：接管 %d 次（期望 0），其中把玩家推离接触面 %d 次', total, taken, shoved))
+    for _, l in ipairs(rows) do print(l) end
+    -- 真实穿透仍要处理：飞行站在石头正中（旧代码在这里会接管并把玩家推开）
+    local room = makeRoom(rockMap)
+    local terFly = Terrain.create(); terFly:build(room, true, cfg)
+    local st = newState(cfg, 240, 280, 0, 0, 1, 0, true)
+    local u = plan(st, terFly, {}, 18610)
+    print(string.format('  飞行站在石头正中 → %s（期望不接管）', u and dirName(u) or '不接管(' .. tostring(st.decision.reason) .. ')'))
+end
+
+-- ============================================================
+print()
+print('===== F6: 地面液体归属（玩家/友方 creep 不该被当成威胁）=====')
+do
+    local EffectSensor = require('sensors/effects')
+    local Tracker = require('entities/tracker')
+    local function eff(index, variant, extra)
+        -- 真机的 creep 效果常带 CollisionDamage（旧代码的"未分类但带伤害即威胁"兜底路径
+        -- 正是把自己/友方的水迹也收进来的入口）
+        local e = { Type = EntityType.ENTITY_EFFECT, Index = index, Variant = variant,
+            Position = Vector(0, 0), Velocity = Vector(0, 0), Size = 12, CollisionDamage = 1,
+            IsDead = function() return false end }
+        for k, v in pairs(extra or {}) do e[k] = v end
+        return e
+    end
+    SMOKE.entities = {
+        eff(850, 22),                                                  -- 敌方 CREEP_RED
+        eff(851, 46),                                                  -- 玩家 PLAYER_CREEP_RED（无生成者）
+        eff(852, 22, { SpawnerType = 3 }),                             -- 跟班生成
+        eff(853, 22, { SpawnerEntity = { Type = 33, HasEntityFlags = function() return true end } }),  -- 友方 NPC 生成
+        eff(854, 22, { SpawnerEntity = { Type = 33, HasEntityFlags = function() return false end } }), -- 敌对 NPC 生成
+    }
+    local trk = Tracker.create()
+    EffectSensor.collect(nil, trk, 10, { hazardCreep = true })
+    local ids = {}
+    for i in pairs(trk.tracked) do ids[#ids + 1] = i end
+    table.sort(ids)
+    print(string.format('  采集到 %d 条（期望 2 = 850 敌方 + 854 敌对NPC生成）：%s', trk.count, table.concat(ids, ',')))
+    local trk2 = Tracker.create()
+    EffectSensor.collect({ canFly = true }, trk2, 10, { hazardCreep = true })
+    print(string.format('  飞行时采集到 %d 条（期望 0：飞行免疫地面液体）', trk2.count))
+    SMOKE.entities = {}
 end

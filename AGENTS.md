@@ -98,6 +98,21 @@ direction_smooth / input_synthesizer / threat_level / spatial` **都是死代码
    方向会让"验证过的安全方向"被剩余 15% 玩家输入拉回威胁（闭环复现：按住"右"冲向火堆，规划器选
    `(0.71,0.71)` 判安全，实际输出 `(0.75,0.60)` 仍是朝火堆推进，35% 的随机位姿会撞上）。
 
+11. **玩家"贴着墙/贴着石头"时必然被算出 0.5~1.2px 假穿透**：引擎让玩家中心最近只到
+    距实心格 **9.2px**，而 `player.radius=10` → 足印重叠 0.6px；`IsPositionInRoom(p,r)` 在可走区
+    边界处又恒返 false 再加 1px。后果有两层：① 贴墙走就拿不到 `nominal_safe`、`triggerKind`
+    永远显示 terrain（会话 220104 的 555 段避让里 **327 段**是这种假触发，占 59%）；
+    ② `peakDepth*10` 让"按向墙"的 base 风险凭空高几十，规划器会把贴墙走的玩家**推离墙**
+    （离线复现：10 个贴墙位姿旧代码 6 次接管、6 次全推离接触面 → 现在 0 次）。
+    更隐蔽的是 `depth>0` 会短路"撞墙位置钉住"，模型在墙附近会把候选路径直接开进石头里。
+    → `config.wallContactSlack`（默认 2.0px）把小于裕量的硬穿透当 0；软危险（地刺）不动。
+12. **地面液体的敌我要按 variant + 生成者链判**：`EffectVariant.PLAYER_CREEP_*`（32/37/44/45/46/
+    53/54/78/90/92）是游戏专为玩家侧 creep 定义的枚举，它们的 `SpawnerType/SpawnerEntity`
+    常为 0/nil → 只按生成者链判会把玩家自己的水迹当敌方（用户 2026-09-11 反馈"分不清敌我
+    地面液体"；离线复现：旧代码采集到 4 条含玩家/友方水迹 → 现在 2 条）。友方化 NPC
+    （Friend Ball/魅惑）生成的水迹要查 `FLAG_FRIENDLY`。飞行时地面液体一律免疫（wiki/Flight），
+    但**火堆仍然伤害飞行角色**（别顺手一起豁免）。
+
 10. **离线复现是杀手锏**：`python tools/repro_planner.py` 用 lupa 加载 `tests/smoke.lua` 的 Isaac mock +
    回放里**真实的房间网格**（terrain 事件的 cells），**直接跑改后的 `decision/predictive.lua`**。
    比人肉推理可靠。注意 mock 里的枚举现在已对齐真机（`tests/smoke.lua`）；若自己搭 mock 仍要注意
@@ -124,6 +139,9 @@ direction_smooth / input_synthesizer / threat_level / spatial` **都是死代码
 | **飞行只挡房间墙与柱子**（SOLID/PIT/OBJECT 可飞越；地刺免疫、尖刺岩石仍伤害、TNT 降为软危险） | 闭环复现 48 例：旧代码 15 次"把飞行玩家推离石头"，新 0 次；步行对照 2/6 不变 |
 | **火堆 = 方形危险体**（半边长 = MAX(Size,16)，角伸到 22.6） | 内切圆漏掉 4 个角（差 5px）→ "往火堆斜上方/斜下方躲却碰上"；随机位姿闭环：碰火 70/200 → **0/200** |
 | **候选按"混合后的实际输出"评估** | 只验证 AI 原始方向时，15% 的玩家输入会把安全方向拉回威胁（斜向擦边 35% 撞上） |
+| **贴墙接触不算穿透**（`wallContactSlack=2.0`，只作用于硬地形） | 引擎允许玩家中心贴到距实心格 9.2px，`radius=10` → 贴墙恒有 0.6px 假穿透；抹掉后贴墙不再被推开、钉子逻辑在墙边恢复工作 |
+| **玩家/友方地面液体永不算威胁**（`PLAYER_CREEP_*` + `FLAG_FRIENDLY` 链） | 这些 variant 的生成者常为空 → 旧实现把自己的水迹当敌方避让（复现 4 条 → 2 条） |
+| **飞行免疫地面液体/地刺/TNT，但仍受火堆与尖刺岩石伤害** | wiki/Flight + wiki/TNT（TNT 只在被摧毁时爆炸）；飞行时 TNT 不再当危险 |
 | **近失（擦边）只在平手时优先，且要差 ≥2 分才改写** | 擦边 2px 与从容 20px 同 risk → 平手按"贴近意图"选 → 选擦边；但阈值太小会为 0.1px 裕量把方向掰到意图外 |
 
 ## 7. 已知未修 / 下一步
@@ -154,8 +172,28 @@ direction_smooth / input_synthesizer / threat_level / spatial` **都是死代码
 | `metrics.triggerKind` | 应开始出现 `spike` |
 | `metrics.complete` 占比 | 应明显高于历史 22%（预算 1.5→5ms 后） |
 | `perfPrevious.totalMs` | 中位 4~7ms；明显偏高就回调 `budgetMs` |
+| **`avoidance_start` 里 terrain 占比** | 应大幅低于 59%（会话 220104 的量级）；仍高就检查 `wallContactSlack` 与 rooms 的 IsPositionInRoom |
+| **每千帧避让段数** | 历史 7~13；贴墙假触发修掉后应明显回落（少插手） |
+| **`avoidance_start` 里 effect 占比** | 若仍有玩家/友方水迹（看着是自己踩出来的液体）→ 查 `PLAYER_CREEP_*` 与 `FLAG_FRIENDLY` 链 |
 
 ## 9. 修复历史（近期，含根因与证据）
+
+### 6f0a1c1 之后 — 贴墙假穿透、敌我地面液体分辨、飞行地面免疫（2026-09-11 夜）
+
+用户微信反馈：① 分不清敌方/友方单位的地面液体；② 躲避手感倒退了；③ 飞行时地刺/地面液体应无效。
+用 `tools/repro_fixes.py`（闭环复现）`git stash` 前后各跑一次定位，根因与数据：
+
+| 反馈 | 根因 | 前后对比（同 PRNG） |
+|---|---|---|
+| 手感倒退 / 爱插手 | 玩家贴墙走时恒有 0.5~1.2px **假穿透**（引擎让中心贴到距实心格 9.2px，`radius=10`），`peakDepth*10` 把玩家推离墙；会话 220104 的 555 段避让里 **327 段（59%）是这个假触发** | 贴墙/贴石 10 个位姿：接管 6 → **0**（旧代码 6 次全部推离接触面） |
+| 敌我地面液体 | `PLAYER_CREEP_*`（玩家侧 creep 枚举）生成者常为 0/nil，只按生成者链判归属 → 自己的水迹被当敌方；友方 NPC 水迹同理 | 采集 4 条（含玩家/友方）→ **2 条**（只留敌方/敌对 NPC 生成） |
+| 飞行仍避让地面液体 | `immuneGround` 只覆盖 `CREEP_VARIANTS`，玩家侧 creep 不在表里 | 飞行采集 1 → **0**；火堆仍采集 ✅ |
+
+改动：`config/defaults.lua`（`wallContactSlack=2.0`）、`sensors/terrain.lua`（probe 抹掉接触裕量内的
+硬穿透；`self.slack` 记入 refresh 签名；飞行时 TNT 不再算危险）、`sensors/effects.lua`
+（`PLAYER_CREEP_VARIANTS` + `FLAG_FRIENDLY` 链 + 飞行地面免疫）、`tests/*`（mock 的
+`GridCollisionClass`/`GridEntityType`/`EntityType`/`EffectVariant` 全部对齐真机枚举值；
+新增贴墙接触、敌我液体、飞行免疫 3 条回归；SHARED CONTROL 42 passed）。
 
 ### a7e6b41 — ALT 键值、地刺/火堆/机关避让、炸弹圈冻死与抢操作（2026-09-11）
 

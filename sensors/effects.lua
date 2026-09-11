@@ -23,6 +23,29 @@ local CREEP_VARIANTS = {
     [EffectVariant.CREEP_BROWN] = true,   -- 56
 }
 
+-- 玩家/跟班自己的地面液体（仅玩家侧道具或跟班会产生）。
+-- 枚举名来自游戏 resources/scripts/enums.lua；这里用名字取，取不到用数字兜底。
+-- 为什么要单独列：这些 variant 的 SpawnerType/SpawnerEntity 常常是 0/nil，
+-- 光靠“生成者链”判归属会把玩家自己的水迹当成敌方水渍去避让
+-- （用户 2026-09-11 反馈“无法分辨敌方还是友方单位的地面液体”）。
+local function variantOf(name, fallback)
+    local v = EffectVariant and EffectVariant[name]
+    if type(v) ~= "number" or v == 0 then return fallback end
+    return v
+end
+local PLAYER_CREEP_VARIANTS = {
+    [variantOf("PLAYER_CREEP_LEMON_MISHAP", 32)] = true,
+    [variantOf("PLAYER_CREEP_HOLYWATER", 37)] = true,
+    [variantOf("PLAYER_CREEP_WHITE", 44)] = true,
+    [variantOf("PLAYER_CREEP_BLACK", 45)] = true,
+    [variantOf("PLAYER_CREEP_RED", 46)] = true,
+    [variantOf("PLAYER_CREEP_GREEN", 53)] = true,
+    [variantOf("PLAYER_CREEP_HOLYWATER_TRAIL", 54)] = true,
+    [variantOf("PLAYER_CREEP_LEMON_PARTY", 78)] = true,
+    [variantOf("PLAYER_CREEP_PUDDLE_MILK", 90)] = true,
+    [variantOf("PLAYER_CREEP_BLACKPOWDER", 92)] = true,
+}
+
 -- 火焰：静态危险圆
 local FIRE_VARIANTS = {
     [51] = true, -- HOT_BOMB_FIRE
@@ -58,17 +81,24 @@ local VISUAL_BLACKLIST = {
 --- 链式归属追踪：向上遍历 SpawnerEntity→Parent 链，检查是否为玩家/跟班相关
 --- 解决跟班生成的地面效果 SpawnerType==0（默认值）导致误判为敌方的问题
 --- 参考 sensors/projectiles.lua 的 hasNpcOwnerInChain 模式
+--- 友方化的 NPC（Friend Ball/魅惑等）生成的水渍同样不是威胁，所以也查 FLAG_FRIENDLY。
+local function hasFriendlyFlag(entity)
+    if not entity or not entity.HasEntityFlags then return false end
+    local ok, f = pcall(function() return entity:HasEntityFlags(EntityFlag.FLAG_FRIENDLY) end)
+    return ok and f == true
+end
 local function isPlayerRelated(entity, depth)
     if not entity or (depth or 0) > 3 then return false end
     local okT, t = pcall(function() return entity.Type end)
     if okT and (t == playerType or t == familiarType) then return true end
+    if hasFriendlyFlag(entity) then return true end
     return isPlayerRelated(entity.SpawnerEntity, (depth or 0) + 1)
         or isPlayerRelated(entity.Parent, (depth or 0) + 1)
 end
 
 --- 是否为威胁效果
 local function isThreatEffect(variant)
-    if VISUAL_BLACKLIST[variant] then return false end
+    if VISUAL_BLACKLIST[variant] or PLAYER_CREEP_VARIANTS[variant] then return false end
     return CREEP_VARIANTS[variant] or FIRE_VARIANTS[variant]
         or SHOCKWAVE_VARIANTS[variant] or IMPACT_VARIANTS[variant]
 end
@@ -92,13 +122,18 @@ function EffectSensor.collect(player, tracker, frame, config)
         -- 伤害值（auto_dodge 模式: effect.CollisionDamage or entity.CollisionDamage or 0）
         local damage = safeGet(e, function(x) return x.CollisionDamage or 0 end, 0)
         local creep=CREEP_VARIANTS[variant]
+        -- 地面液体（敌方 creep + 玩家自己的 creep）
+        local groundLiquid=creep or PLAYER_CREEP_VARIANTS[variant]
         -- 链式友方检测：跟班生成的水渍 SpawnerType 可能为0（默认值），
         -- 仅检查 SpawnerType 会漏判，需遍历 SpawnerEntity/Parent 链
-        local playerOwned=e.SpawnerType==playerType or e.SpawnerType==familiarType
+        local playerOwned=PLAYER_CREEP_VARIANTS[variant]
+            or e.SpawnerType==playerType or e.SpawnerType==familiarType
             or isPlayerRelated(e.SpawnerEntity, 0) or isPlayerRelated(e.Parent, 0)
-        local immuneGround=creep and player and player.canFly
-        local enabled=not creep or config.hazardCreep
-        if enabled and not immuneGround and not (creep and playerOwned)
+            or hasFriendlyFlag(e)
+        -- 飞行免疫地面液体（wiki/Flight: 飞行不被 creep/spikes 伤害；火堆仍然伤害）
+        local immuneGround=groundLiquid and player and player.canFly
+        local enabled=not groundLiquid or config.hazardCreep
+        if enabled and not immuneGround and not (groundLiquid and playerOwned)
             and (isThreatEffect(variant) or damage > 0) then
             -- 兜底：未分类 variant 但带 CollisionDamage 的效果也算威胁
             -- （"Killed by (10.1)" 类爆炸特效就在这层被接住，避免漏判）

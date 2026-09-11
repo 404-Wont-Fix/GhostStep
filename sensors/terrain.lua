@@ -70,11 +70,12 @@ function Terrain.build(self, room, fly, config)
             end
         end
         -- 已炸毁的 TNT 可能保留 State/VarData 与 GridEntity；无碰撞残骸不能重建障碍。
-        -- 步行时 TNT 是硬障碍；飞行时只降级为软危险 —— 不能再把飞行玩家从格子上推开。
-        if g and config.hazardTnt and typ == G.GRID_TNT and collision ~= C.COLLISION_NONE
+        -- 步行时 TNT 是硬障碍 + 软危险（推入火/刺岩/红便便会炸）；
+        -- 飞行时只是可飞越的障碍物（wiki/TNT: 被摧毁才爆，接触不爆）→ 不再当危险，
+        -- 否则飞行角色会被一块 TNT 持续推开。
+        if g and config.hazardTnt and not fly and typ == G.GRID_TNT and collision ~= C.COLLISION_NONE
             and ((g.State or 0)>1 or (g.VarData or 0)>0) then
-            danger = "tnt"
-            if not fly then pass = false end
+            danger, pass = "tnt", false
         end
         local old = grid[index+1]
         if not old or old.walkable ~= pass or old.danger ~= danger or old.collision ~= collision then changed = true end
@@ -87,12 +88,16 @@ function Terrain.build(self, room, fly, config)
     self.topLeft = room:GetGridPosition(0) - Vector(20,20)
     self.doorCells = doorCells
     self.room, self.canFly, self.valid = room, fly, true
+    -- 贴墙接触裕量（见 probe 注释）；由 config 控制，便于回归测试与现场调参。
+    self.slack = config and config.wallContactSlack or 0
     self.roomIndex = Game():GetLevel():GetCurrentRoomIndex()
     if changed then self.revision = self.revision + 1 end
     return true
 end
 function Terrain.refresh(self, room, fly, config, frame)
+    -- 签名变化即重建（MCM 现场调参会改这些值）
     local signature = tostring(config.hazardSpikes)..tostring(config.hazardTnt)
+        ..tostring(config.wallContactSlack)
     if not self.valid or fly ~= self.canFly or signature ~= self.signature
         or frame - (self.lastRefresh or -999) >= (config.terrainRefreshFrames or 3) then
         self.lastRefresh, self.signature = frame, signature
@@ -127,6 +132,15 @@ end
 -- 一次扫描同时得到两个深度：硬地形（墙/坑/石头）与软危险（地刺/TNT）。
 -- 拆开才能让地刺从"一击否决"变成"带代价可穿越"。
 -- 返回 hardDepth, dangerDepth
+-- 贴墙接触裕量（wallContactSlack）：引擎本身允许玩家贴墙走 —— 实测玩家中心距实心格
+-- 最近可达 9.2px，而 player.radius=10，于是一贴墙就算出 0.5~1.2px 的"穿透"，
+-- IsPositionInRoom(p,r) 在边界处又恒返 false 再加 1px。后果有两层：
+--   1) initialDepth>0 → 拿不到 nominal_safe，且 triggerKind 永远是 terrain
+--      （会话 220104 的 555 段避让里 327 段是这个假触发，占 59%）；
+--   2) 更严重：peakDepth*10 让 base（玩家按向墙那侧）风险凭空高几十，
+--      规划器于是把贴墙走的玩家推离墙；同时 depth>0 会短路"撞墙位置钉住"，
+--      模型在墙附近会直接把候选路径开进石头里。
+-- 小于裕量的硬穿透按 0 处理（软危险/地刺不动，踩刺本来就是真接触）。
 function Terrain.probe(self,p,r)
     if not self.valid then return 0,0 end
     r = r or 0
@@ -155,6 +169,7 @@ function Terrain.probe(self,p,r)
             end
         end
     end
+    if hard<=self.slack then hard=0 end
     return hard, danger
 end
 -- 返回重叠深度。足迹与实心格子用圆-AABB，允许沿墙滑动。

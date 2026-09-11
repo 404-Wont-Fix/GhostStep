@@ -95,10 +95,13 @@ _G.Game = function()
     }
 end
 
+-- 真机值（resources/scripts/enums.lua）：旧 mock 把 ENTITY_PLAYER 写成 9（真机 9 是
+-- ENTITY_PROJECTILE）、ENTITY_PROJECTILE 写成 1000（真机 1000 是 ENTITY_EFFECT），
+-- 会让"玩家归属"判断在测试里与真机相反。ENTITY_NPC 真机不存在，这里只作为测试用别名。
 _G.EntityType = setmetatable({
-    ENTITY_PLAYER = 9, ENTITY_FAMILIAR = 3, ENTITY_TEAR = 2,
-    ENTITY_BOMB = 4, ENTITY_LASER = 7, ENTITY_KNIFE = 8,
-    ENTITY_PROJECTILE = 1000, ENTITY_EFFECT = 1000, ENTITY_NPC = 33,
+    ENTITY_PLAYER = 1, ENTITY_TEAR = 2, ENTITY_FAMILIAR = 3, ENTITY_BOMB = 4,
+    ENTITY_PICKUP = 5, ENTITY_SLOT = 6, ENTITY_LASER = 7, ENTITY_KNIFE = 8,
+    ENTITY_PROJECTILE = 9, ENTITY_EFFECT = 1000, ENTITY_NPC = 33,
 }, { __index = function() return 0 end })
 -- 真机值（游戏 resources/scripts/enums.lua）。历史 mock 用的是另一套编号，
 -- 导致离线复现工具必须覆盖枚举；这里直接对齐真机，避免两套编号。

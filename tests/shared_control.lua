@@ -512,8 +512,11 @@ test('flying player is not shoved off ground obstacles',function()
     assert(tRockSpike:isSafeAt(Vector(40,40),10,false),'flight passes over a spiked rock')
     assert(not tRockSpike:isSafeAt(Vector(40,40),10),'spiked rock still damages a flying player')
     local tTnt=centre(GridCollisionClass.COLLISION_OBJECT,GridEntityType.GRID_TNT,true)
-    assert(tTnt:isSafeAt(Vector(40,40),10,false) and not tTnt:isSafeAt(Vector(40,40),10),
-        'flying over TNT: passable but still dangerous')
+    -- wiki/TNT: TNT 只在被摧毁时爆炸（接触不爆）→ 飞行时它只是可飞越障碍，不再算危险
+    assert(tTnt:isSafeAt(Vector(40,40),10),'flying over TNT is safe (TNT only explodes when destroyed)')
+    local tTntWalk=centre(GridCollisionClass.COLLISION_OBJECT,GridEntityType.GRID_TNT,false)
+    assert(not tTntWalk:isSafeAt(Vector(40,40),10,false) and not tTntWalk:isSafeAt(Vector(40,40),10),
+        'walking: TNT still blocks and stays a hazard')
     local tSpike=centre(GridCollisionClass.COLLISION_NONE,GridEntityType.GRID_SPIKES,true)
     assert(tSpike:isSafeAt(Vector(40,40),10),'flight is immune to spikes')
 end)
@@ -569,6 +572,43 @@ test('fireplace corner is dangerous and the planner evaluates the blended output
     local _,_,_,selectedOff=plan(0)
     assert(selectedOff.clearance and selectedOff.clearance>0 and selectedOff.clearance<cfg.nearMissClearance,
         'without the rule the cheaper graze must win, got clearance '..tostring(selectedOff.clearance))
+end)
+test('hugging a wall is contact, not penetration (no wall-shoving)',function()
+    -- 回放 220104: 555 段避让里 327 段（59%）是贴墙走的假触发。
+    -- 实测玩家中心距实心格最近 9.2px（player.radius=10）→ 贴墙恒有 0.5~1.2px 假穿透，
+    -- IsPositionInRoom(p,r) 在边界处又加 1px。不抹掉就会：拿不到 nominal_safe、
+    -- peakDepth*10 把玩家推离墙、且 depth>0 短路“撞墙位置钉住”。
+    local cfg=Defaults.get()
+    -- 3x3 小房，中心格 (1,1) 为石头，玩家站在它左侧 9.4px 处（足迹刚好碰到）
+    local r={GetGridWidth=function() return 3 end,GetGridSize=function() return 9 end,
+        GetGridPosition=function(_,i) return Vector(i%3*40,math.floor(i/3)*40) end,
+        GetGridEntity=function(_,i)
+            if i==4 then return {CollisionClass=GridCollisionClass.COLLISION_SOLID,State=0,GetType=function() return GridEntityType.GRID_ROCK end} end
+            if i==0 or i==2 or i==6 or i==8 then return {CollisionClass=GridCollisionClass.COLLISION_WALL,State=0,GetType=function() return 0 end} end
+            return nil
+        end}
+    local ter=Terrain.create(); ter:build(r,false,cfg)
+    -- 格(1,1) 的 AABB: topLeft=(-20,-20) → [20,60]x[20,60]；玩家在 (69.4,40) → 距离 9.4 → 足印重叠 0.6
+    local hard,danger=ter:probe(Vector(69.4,40),10)
+    assert(hard==0,'0.6px footprint overlap on a rock must not count as penetration, got '..tostring(hard))
+    local deep=ter:probe(Vector(69.4-4,40),10)
+    assert(deep>2,'a real penetration must still be reported, got '..tostring(deep))
+    -- 规划器：贴墙按向石头（基对）不得因假穿透而接管
+    local st=state(); st.config.wallContactSlack=cfg.wallContactSlack
+    st.player.position=Vector(69.4,40); st.player.velocity=Vector(-6,0)
+    st.player.inputDir=Vector(-1,0)
+    local u=run(st,{},ter,10)
+    assert(u==nil and st.decision.reason=='nominal_safe',
+        'walking into a wall you are already touching must not trigger avoidance, got '..tostring(st.decision.reason))
+    assert(st.decision.metrics.initialPenetration==0,'no phantom initial penetration')
+    -- 关掉裕量（旧行为）必须重现假穿透 → 证明这条修改真的在起作用
+    local cfgOld=Defaults.get(); cfgOld.wallContactSlack=0
+    local terOld=Terrain.create(); terOld:build(r,false,cfgOld)
+    local stOld=state()
+    stOld.player.position=Vector(69.4,40); stOld.player.velocity=Vector(-6,0)
+    stOld.player.inputDir=Vector(-1,0)
+    run(stOld,{},terOld,10)
+    assert(stOld.decision.metrics.initialPenetration>0,'legacy behaviour must report the phantom penetration')
 end)
 print(string.format('SHARED CONTROL: %d passed, %d failed',checks-failures,failures))
 assert(failures==0,'shared control regressions failed')
