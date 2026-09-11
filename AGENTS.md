@@ -27,7 +27,7 @@ direction_smooth / input_synthesizer / threat_level / spatial` **都是死代码
 | 目的 | 命令 |
 |---|---|
 | 语法 + 行为 + 集成测试（需要 `pip install lupa`） | `python tests/run_smoke.py`（可加 `--lua 5.1/5.3`） |
-| 部署到游戏（robocopy `/MIR`，排除 tests/tools/references/recordings） | `deploy.bat` |
+| **部署到游戏**（镜像同步） | `python tools/gs.py 4`（`--dry-run` 预览；`--sync` 不弹菜单，供脚本调用）；双击 `deploy.bat` 等价于同一条命令 |
 | 回放分析（中文 report.md/json + 4 个 csv） | `python tools/analyze_replay.py <回放.jsonl> --output <目录>` |
 | 回放可视化 | `python tools/replay_viewer.py --dir "<Steam>/mods/GhostStep3/recordings" --latest` |
 | **用真实规划器离线复现回放场景** | `python tools/repro_planner.py` |
@@ -56,7 +56,10 @@ direction_smooth / input_synthesizer / threat_level / spatial` **都是死代码
 ## 4. 硬约定
 
 1. **不硬编码本机路径**（用户明确要求）。运行时数据只写 `recordings/`（用 `metadata.xml` 向上定位 mod 根目录）。
-2. 离线工具放 `tools/`、测试放 `tests/`——两者都不会被 `deploy.bat` 同步进游戏。
+2. 离线工具放 `tools/`、测试放 `tests/`——两者都不会被部署同步进游戏。
+   **部署的排除清单只写在 `tools/gs.py` 的 `ROBOCOPY_XD` / `ROBOCOPY_XF`**（唯一真相源）；
+   `deploy.bat` 只是启动器，不要再往 bat 里加 robocopy 参数（历史上有过两份清单走偏的 bug —— 同一
+   `AGENTS.md` 只加进 bat 没加进 Python，于是用 Python 工具同步时又被复制进游戏目录）。
 3. 新增可调参数：先加进 `config/defaults.lua` 并写注释说明依据；需要现场调的再加进 `config/mcm.lua` 的 `SETTINGS`。
 4. 所有 entity 字段/方法访问用 `pcall` 包（Rep+ 上 API 可能缺失，缺了要静默降级而不是崩）。
 5. 改动决策层后必须跑 `tests/run_smoke.py`，并尽量在 `tests/shared_control.lua` 补一条能复现旧 bug 的回归。

@@ -8,7 +8,9 @@ GhostStep3 工具箱 — 项目工具统一 CLI 入口
     python tools/gs.py 1 --latest   # 直接: 录制回放分析器（分析最新会话）
     python tools/gs.py 2            # 直接: 生成动画数据库
     python tools/gs.py 3            # 直接: 运行冒烟测试
-    python tools/gs.py 4            # 直接: 部署到游戏目录
+    python tools/gs.py 4                  # 直接: 部署到游戏目录
+    python tools/gs.py 4 --sync           # 直接: 部署（不弹菜单，deploy.bat 用的就是这条）
+    python tools/gs.py 4 --dry-run        # 直接: 预览会变化的文件（不写入）
 """
 
 import os
@@ -182,23 +184,57 @@ def tool_test(args=None):
 # 工具 4: 部署
 # =====================================================================
 
+# 同步排除清单：**唯一真相源**。deploy.bat 只是启动器，不再自己拼 robocopy 参数，
+# 所以新增开发用文件（文档/工具/测试）只需要改这里一处。
+ROBOCOPY_XD = ["tests", "recordings", ".git", ".claude", "references", "tools"]
+ROBOCOPY_XF = ["deploy.bat", ".gitignore", "ANALYSIS.md", "AGENTS.md"]
+ROBOCOPY_QUIET = ["/NFL", "/NDL", "/NJH", "/NJS", "/NP"]
+
+DEPLOY_DST = Path(r"D:\SteamLibrary\steamapps\common\The Binding of Isaac Rebirth\mods\GhostStep3")
+
+
+def deploy_command(extra=None, dry=False):
+    """拼出 robocopy 命令（排除清单来自本模块的常量）
+    dry=True 时保留 robocopy 自己的文件清单汇总（预览要看这个），只去掉进度刷屏；
+    正常同步则全部静默（与旧 deploy.bat 的 >nul 行为一致）。"""
+    cmd = ["robocopy", str(PROJECT_ROOT), str(DEPLOY_DST), "/MIR",
+           "/XD"] + ROBOCOPY_XD + ["/XF"] + ROBOCOPY_XF
+    if dry:
+        cmd.extend(["/L", "/NP"])
+    else:
+        cmd.extend(ROBOCOPY_QUIET)
+    if extra:
+        cmd.extend(extra)
+    return cmd
+
+
 def tool_deploy(args=None):
     src = PROJECT_ROOT
-    dst = Path(r"D:\SteamLibrary\steamapps\common\The Binding of Isaac Rebirth\mods\GhostStep3")
+    dst = DEPLOY_DST
 
     if not (src / "main.lua").exists():
         print(f"  ✗ 源目录不存在: {src}")
-        return 1
+        return 16  # robocopy 风格的失败码（>=8），便于 deploy.bat 用 ERRORLEVEL 判定
 
-    ROBOCOPY_BASE = [
-        "robocopy", str(src), str(dst), "/MIR",
-        "/XD", "tests", "recordings", ".git", ".claude", "references", "tools",
-        "/XF", "deploy.bat", ".gitignore", "ANALYSIS.md",
-    ]
-    ROBOCOPY_QUIET = ["/NFL", "/NDL", "/NJH", "/NJS", "/NP"]
-
-    if args is not None and "--dry-run" not in args:
-        return subprocess.run(ROBOCOPY_BASE + ROBOCOPY_QUIET + args).returncode
+    # 命令行模式: python tools/gs.py 4 [--sync] [--dry-run]
+    #   --sync    直接部署（供 deploy.bat 调用，不弹菜单）
+    #   --dry-run 只列出会变化的文件
+    #   其余参数原样透传给 robocopy（例如 /L）
+    if args is not None:
+        flags = [a for a in args if a not in ("--sync", "--dry-run")]
+        dry = ("--dry-run" in args) or ("/L" in flags)
+        print(f"  源: {src}")
+        print(f"  目标: {dst}")
+        result = subprocess.run(deploy_command(flags, dry))
+        rc = result.returncode
+        ok = rc < 8   # robocopy: 0..7 均为成功（0=无变化，1=有文件复制...）
+        if ok:
+            print("  ✓ 镜像同步完成（镜像目录 = mods/GhostStep3）。游戏内按 Ctrl+R 重载 Lua。"
+                  if not dry else "  （预览模式 /L：以上为将要变化的文件）")
+        else:
+            print(f"  ✗ robocopy 失败，错误码 {rc}")
+        # 归一化退出码：成功→0（robocopy 的 0..7 会让 shell 的 && 误判），失败保留原码
+        return 0 if ok else rc
 
     while True:
         print(f"\n--- 部署 ---")
@@ -213,14 +249,14 @@ def tool_deploy(args=None):
         if choice is None or choice == "0":
             return None
         elif choice == "1":
-            result = subprocess.run(ROBOCOPY_BASE + ROBOCOPY_QUIET)
+            result = subprocess.run(deploy_command())
             if result.returncode < 8:
                 print("\n  ✓ 部署完成。游戏内按 Ctrl+R 重载 Lua。")
             else:
                 print(f"\n  ✗ robocopy 失败，错误码 {result.returncode}")
             return result.returncode
         elif choice == "2":
-            return subprocess.run(ROBOCOPY_BASE + ["/L"]).returncode
+            return subprocess.run(deploy_command(dry=True)).returncode
         else:
             print("  无效选项")
 

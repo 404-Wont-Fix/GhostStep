@@ -257,7 +257,9 @@ M4  前兆喂 Tier 1              （fuseFrames 通用化 + future_motion 接 ap
 4. **`mathext.remap` 只支持递增区间**：`inMax <= inMin` 直接返回 outMin。倒序映射写成等价递增形式（先例：fuse 的 `remap(f, 0, 30, 1.0, 0.6)`）。
 5. **tracker 全字段透传**：sensors 给 entry 加新字段（damage/fuseFrames/endPos/appearFrame...）自动进追踪器，无需改 tracker.lua；但**冒烟测试的 mock 实体要同步补字段**，否则测的不是新路径。
 6. **测试 mock 不验证 API 形状**：离线 mock 是按想象写的。API 形状错误只能在游戏内暴露——重要路径要配"一次性探测日志"兜底。
-7. **部署**：`deploy.bat`（robocopy /MIR，排除 tests/recordings/.git/.claude/references/tools）；bat 文件**必须纯 ASCII**（GBK 代码页下 UTF-8 中文注释会炸出垃圾命令）。游戏内 Ctrl+R 重载 Lua。
+7. **部署**：`python tools/gs.py 4`（或双击 `deploy.bat`，它转调同一条命令）——镜像同步到 mods/GhostStep3；
+   排除清单的**唯一来源**是 `tools/gs.py` 的 `ROBOCOPY_XD` / `ROBOCOPY_XF`（`--dry-run` 可预览）。
+   bat 文件**必须纯 ASCII**（GBK 代码页下 UTF-8 中文注释会炸出垃圾命令）。游戏内 Ctrl+R 重载 Lua。
 8. **录制数据分析**：`--luadebug` 启动 + MCM 开录制 → `mods/GhostStep3/recordings/*.jsonl` → `python tools/replay_viewer.py <file> --seconds N`。快照级别 4 含逐威胁明细+候选评分（离线可重算决策）。
 9. **并行开发协调**：改动前 `git status` + 重读目标文件（可能有并行会话的改动）；每轮收尾跑全量冒烟测试再部署。
 10. **归因仪表盘是验收之本**：每局挨打都会打 `受击归因#N` 行（六分类+建议），MCM 调试页有局内统计。任何行为改动都要看归因分布有没有往预期方向走。
