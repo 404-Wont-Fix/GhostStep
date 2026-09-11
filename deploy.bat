@@ -22,7 +22,8 @@ rem       by GBK codepage cmd and break into garbage commands ('ferences' bug).
 rem /XD recordings: keep runtime replay data (protects it from /MIR deletion)
 rem /XD .git .claude references: repo/reference dirs are not part of the mod
 rem /XD tools: offline analysis tooling (Python), not loaded by the game
-robocopy "%SRC%" "%DST%" /MIR /XD tests recordings .git .claude references tools /XF deploy.bat .gitignore ANALYSIS.md /NFL /NDL /NJH /NJS /NP >nul
+rem /XF ANALYSIS.md AGENTS.md: dev/agent docs live in the repo, not in the mod
+robocopy "%SRC%" "%DST%" /MIR /XD tests recordings .git .claude references tools /XF deploy.bat .gitignore ANALYSIS.md AGENTS.md /NFL /NDL /NJH /NJS /NP >nul
 if %ERRORLEVEL% GEQ 8 (
     echo ERROR: robocopy failed with code %ERRORLEVEL%
     pause
