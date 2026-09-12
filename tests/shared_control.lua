@@ -643,5 +643,199 @@ test('duplicate tracker sample must not turn a straight tear into a parabola',fu
     assert(hit and hit>=0 and hit<=3,'point-blank tear must be predicted as a hit, got '..tostring(hit))
     assert(st.decision.reason~='nominal_safe','planner must not call this frame safe')
 end)
+test('frozen statue (ENTITY_FROZEN_ENEMY 963) is not a contact threat',function()
+    -- 冰雕：entities2.xml id=963 name="Frozen Enemy" collisionDamage=0，
+    -- 玩家可以走上去把它踢滑（Uranus/Ice Cube 的冰雕），它只挡敌人子弹。
+    -- 用户 2026-09-12 反馈“被冰冻住的敌人推不动、还触发避让”。
+    local EnemySensor=require('sensors/enemies')
+    local function npc(o)
+        local e={Type=85,Index=600,InitSeed=1,Position=Vector(40,0),Velocity=Vector(0,0),
+            Size=13,CollisionDamage=1,ToNPC=function() return {} end,
+            IsDead=function() return false end,IsActiveEnemy=function() return true end,
+            HasEntityFlags=function() return false end}
+        for k,v in pairs(o or {}) do e[k]=v end
+        return e
+    end
+    local player={position=Vector(0,0),velocity=Vector(0,0)}
+    EnemySensor.resetRoom()
+    local trk=Tracker.create()
+    SMOKE.entities={npc({}),npc({Type=963,Index=601,CollisionDamage=0})}
+    EnemySensor.collect(player,trk,10,Defaults.get())
+    assert(trk.count==1,'statue must be skipped, count='..trk.count)
+    assert(trk.tracked[600] and not trk.tracked[601],'only the real enemy is tracked')
+    -- 关掉豁免必须重现旧行为（证明这条修改真的在起作用）
+    local cfgOld=Defaults.get(); cfgOld.skipFrozenStatues=false
+    local trk2=Tracker.create()
+    EnemySensor.collect(player,trk2,10,cfgOld)
+    assert(trk2.count==2,'legacy behaviour still collects the statue, count='..trk2.count)
+    SMOKE.entities={}
+    EnemySensor.resetRoom()
+end)
+test('curved projectile is still detected when the newest samples repeat',function()
+    -- 环形旋转弹幕：mod 回调频率高于游戏逻辑更新频率时，tracker 会把同一位置
+    -- 记进相邻两帧；旧实现用“最近两步”判脏样本 → 直接关掉弧线模型 →
+    -- 旋转弹幕退回直线外推（用户 2026-09-12 反馈“环形旋转弹幕躲得差”）。
+    local Predict=require('threat/projectile_predict')
+    local Future=require('threat/future_motion')
+    local pts={{100,0},{99.4,6.0},{98.5,11.9},{98.5,11.9}}  -- 绕原点 r≈100，最后两步重复
+    local e={kind='projectile',id='p:9',index=9,pos=Vector(pts[4][1],pts[4][2]),
+        vel=Vector(-0.6,5.9),radius=5,speed=6,lastFrame=104,historyCount=4,history={}}
+    for i,p in ipairs(pts) do
+        e.history[i]={pos=Vector(p[1],p[2]),vel=Vector(-0.6,5.9),frame=100+i}
+    end
+    assert(Predict.isCurved(e),'duplicate newest sample must not hide a real arc')
+    local c=Future.pos(e,10,104)
+    local r=math.sqrt(c.X*c.X+c.Y*c.Y)
+    assert(math.abs(r-100)<6,'arc extrapolation must stay on the circle, r='..tostring(r))
+end)
+test('hop tracker learns the rhythm and predicts the aimed landing point',function()
+    -- 跳蛛（Trite=29:1）：待跳静止 → 直线跳向玩家，跳距随玩家距离变化，节奏固定。
+    local Hop=require('entities/hop_tracker')
+    local cfg=Defaults.get()
+    local h=Hop.create(cfg)
+    local player={position=Vector(0,0)}
+    local e={Index=7,InitSeed=42,Position=Vector(200,0),Velocity=Vector(0,0),Size=13}
+    local hints={}
+    local function step(frame,pos,vel)
+        e.Position,e.Velocity=pos,vel
+        local hint=Hop.observe(h,e,player,frame,cfg)
+        if hint then hints[frame]=hint end
+    end
+    for f=0,29 do step(f,Vector(200,0),Vector(0,0)) end
+    for f=30,41 do step(f,Vector(200-10*(f-30),0),Vector(-10,0)) end  -- 第一次跳：12 帧、120px
+    for f=42,69 do step(f,Vector(80,0),Vector(0,0)) end
+    -- 第一次跳已知起点，但还没有“节奏” → 不给预测
+    assert(hints[60]==nil,'no rhythm yet => no pre-warning')
+    for f=70,81 do step(f,Vector(80-5*(f-70),0),Vector(-5,0)) end   -- 第二次跳：12 帧、60px
+    for f=82,120 do step(f,Vector(20,0),Vector(0,0)) end
+    local hint=hints[98]
+    assert(hint,'after two leaps the rhythm must be known, hint='..tostring(hint))
+    assert(hint.inFrames==12,'next takeoff must be one period after the last start, got '..tostring(hint.inFrames))
+    assert(hint.flight==12,'observed flight time must be reused, got '..tostring(hint.flight))
+    -- 玩家在 (0,0)、敌人在 (20,0) → 落点必须在玩家方向上
+    assert(hint.lx<hint.ly+1e-6 and hint.lx<20,'landing must be toward the player, lx='..tostring(hint.lx))
+end)
+test('hop predictor ignores enemies that do not leap at the player',function()
+    local Hop=require('entities/hop_tracker')
+    local cfg=Defaults.get()
+    local h=Hop.create(cfg)
+    local player={position=Vector(0,0)}
+    local e={Index=8,InitSeed=9,Position=Vector(200,0),Velocity=Vector(0,0),Size=13}
+    local got=nil
+    local function step(frame,pos,vel)
+        e.Position,e.Velocity=pos,vel
+        local hint=Hop.observe(h,e,player,frame,cfg)
+        if hint then got=hint end
+    end
+    for f=0,29 do step(f,Vector(200,0),Vector(0,0)) end
+    -- 侧向跳（跳向垂直于玩家的方向 → 实测朝向误差 90°）: 不应当作瞄准跳跃预测
+    for f=30,41 do step(f,Vector(200,10*(f-30)),Vector(0,10)) end
+    for f=42,69 do step(f,Vector(200,120),Vector(0,0)) end
+    for f=70,81 do step(f,Vector(200,120+10*(f-70)),Vector(0,10)) end
+    for f=82,120 do step(f,Vector(200,240),Vector(0,0)) end
+    assert(got==nil,'a perpendicular hopper must not produce an aimed-landing prediction')
+end)
+test('planner pre-emptively dodges a predicted hop landing on the player',function()
+    -- 模型：跳蛛待跳 → 直线跳到“起跳那一刻玩家所在”（hop_tracker 里已按速度外推）
+    local hop={id='e:9',index=9,kind='enemy',pos=Vector(140,200),vel=Vector(0,0),speed=0,
+        radius=13,damage=1,hopOn=true,hopIn=6,hopFlight=10,hopLX=200,hopLY=200,hopLen=60}
+    local st=state()
+    st.player.position=Vector(200,200); st.player.velocity=Vector(0,0)
+    local cmd=run(st,{hop},nil,50)
+    assert(st.decision.metrics.triggerKind=='hop','hop must be reported as the trigger, got '
+        ..tostring(st.decision.metrics.triggerKind))
+    assert(st.decision.metrics.nominalHit and st.decision.metrics.nominalHit>0,
+        'standing on the landing spot must be predicted as hit, got '
+        ..tostring(st.decision.metrics.nominalHit))
+    assert(st.decision.reason~='nominal_safe','the planner must not call a predicted hop safe')
+    assert(cmd and cmd:Length()>0.5,'a real escape direction must be issued, got '..tostring(cmd))
+    -- 旧行为（没有模型）必须重现“站桩不被判危险”：证明这条修改真的在起作用
+    local st2=state()
+    st2.player.position=Vector(200,200); st2.player.velocity=Vector(0,0)
+    local silent={id='e:9',index=9,kind='enemy',pos=Vector(140,200),vel=Vector(0,0),speed=0,radius=13,damage=1}
+    run(st2,{silent},nil,50)
+    assert(st2.decision.reason=='nominal_safe','without the hop model the same frame is safe, got '
+        ..tostring(st2.decision.reason))
+end)
+test('closed loop: hopping enemy is dodged when the rhythm is known',function()
+    -- 端到端：真 HopTracker + 真 Planner + 运动模型 v'=0.75v+1.5u。
+    -- 敌人：待机 30 帧 → 6 帧直线跳到玩家（跳距随距离、节奏固定）。
+    -- 对照：关掉 hopPredict（退回首线外推）→ 起跳那一刻才发现 → 来不及 → 被踩。
+    local Hop=require('entities/hop_tracker')
+    local W=0.85                       -- maxDodgeWeight（input_writer 的上限）
+    local CONTACT=23                   -- 13(敌) + 10(玩家)
+    local FLIGHT=5                     -- 实测跳跃滞空 8~12 帧；这里取更狠的 5 帧（快跳）
+    local IDLE=30
+    local function simulate(useHopModel)
+        local cfg=Defaults.get(); cfg.budgetMs=1000; cfg.hopPredict=useHopModel
+        local tool=Hop.create(cfg)
+        local enemy={Index=3,InitSeed=7,Position=Vector(0,0),Velocity=Vector(0,0),Size=13}
+        -- 热身（只用追踪器，玩家在远方）：学两次跳跃 → 知道节奏/滞空/跳距
+        local far={position=Vector(1500,0),velocity=Vector(0,0)}
+        local frame=0
+        for _=1,2 do
+            for _=1,IDLE do enemy.Velocity=Vector(0,0); Hop.observe(tool,enemy,far,frame,cfg); frame=frame+1 end
+            local base=Vector(enemy.Position.X,enemy.Position.Y)
+            for i=1,FLIGHT do
+                enemy.Position=base+Vector(10*i,0); enemy.Velocity=Vector(10,0)
+                Hop.observe(tool,enemy,far,frame,cfg); frame=frame+1
+            end
+        end
+        -- 实测：玩家就贴在跳程边缘（30px）、不按方向键（只能靠 mod 躲）
+        local player={position=Vector(enemy.Position.X+30,enemy.Position.Y),velocity=Vector(0,0)}
+        local st=state()
+        local ter=Terrain.create()
+        local ph,timer,from,to='idle',0,nil,nil
+        local hits=0; local closest=1e9
+        for _=1,200 do
+            -- 敌人状态机
+            if ph=='idle' then
+                enemy.Velocity=Vector(0,0); timer=timer+1
+                if timer>=IDLE then
+                    ph='air'; timer=0; from=Vector(enemy.Position.X,enemy.Position.Y)
+                    local dx,dy=player.position.X-from.X,player.position.Y-from.Y
+                    local d=math.max(0.001,math.sqrt(dx*dx+dy*dy))
+                    local leap=math.max(30,math.min(340,d))
+                    to=Vector(from.X+dx/d*leap,from.Y+dy/d*leap)
+                    enemy.Velocity=(to-from)/FLIGHT
+                    enemy.Position=from
+                end
+            else
+                timer=timer+1
+                enemy.Position=from+(to-from)*math.min(1,timer/FLIGHT)
+                if timer>=FLIGHT then ph='idle'; timer=0; enemy.Velocity=Vector(0,0) end
+            end
+            -- 传感器（真 HopTracker）→ 威胁条目
+            local hint=cfg.hopPredict and Hop.observe(tool,enemy,player,frame,cfg) or nil
+            local entry={id='enemy:3:7',index=3,kind='enemy',
+                pos=Vector(enemy.Position.X,enemy.Position.Y),
+                vel=Vector(enemy.Velocity.X,enemy.Velocity.Y),speed=enemy.Velocity:Length(),
+                radius=13,damage=1}
+            if hint then
+                entry.hopOn=true; entry.hopIn=hint.inFrames; entry.hopFlight=hint.flight
+                entry.hopLX,entry.hopLY=hint.lx,hint.ly; entry.hopLen=hint.len
+            end
+            -- 规划器（真模块）+ 输入混合（与 input_writer 同形）
+            st.player.position=Vector(player.position.X,player.position.Y)
+            st.player.velocity=Vector(player.velocity.X,player.velocity.Y)
+            st.player.inputDir=Vector(0,0)
+            local cmd=Planner.run(st,{config=cfg,terrain=ter,getHazards=function() return {entry} end},frame)
+            local u=cmd and cmd*W or Vector(0,0)
+            player.velocity=Vector(0.75*player.velocity.X+1.5*u.X,0.75*player.velocity.Y+1.5*u.Y)
+            player.position=player.position+player.velocity
+            local d=player.position:Distance(enemy.Position)
+            closest=math.min(closest,d)
+            if d<CONTACT then hits=hits+1 end
+            frame=frame+1
+        end
+        return hits,closest
+    end
+    local hitsNew,closeNew=simulate(true)
+    local hitsOld,closeOld=simulate(false)
+    assert(hitsOld>0,'legacy linear-only prediction must reproduce the late reaction, hits='..hitsOld)
+    assert(hitsNew<hitsOld,'the hop model must reduce hits: '..hitsNew..' vs '..hitsOld
+        ..' (closest '..closeNew..' vs '..closeOld..')')
+end)
+print(string.format('SHARED CONTROL: %d passed, %d failed',checks-failures,failures))
 print(string.format('SHARED CONTROL: %d passed, %d failed',checks-failures,failures))
 assert(failures==0,'shared control regressions failed')

@@ -28,6 +28,10 @@ function Defaults.get()
         hazardNpcAttacks = true,    -- NPC攻击前兆（Phase 3 实装，先占位）
         hazardSpikes = true,        -- 地刺
         hazardTnt = true,           -- TNT 爆炸
+        -- 冰雕像（EntityType 963 / ENTITY_FROZEN_ENEMY，entities2.xml: name="Frozen Enemy"
+        -- collisionDamage=0）：玩家可以走过去把它踢滑（碰撞它不受伤），它只挡敌人子弹。
+        -- 用户 2026-09-12 反馈“被冰冻住的敌人推不动、还触发避让” → 它不是接触威胁。
+        skipFrozenStatues = true,
 
         ---------------------------------------------------------------
         -- 躲避（算法核心参数）
@@ -66,6 +70,22 @@ function Defaults.get()
         -- ① 贴墙走就拿不到 nominal_safe，triggerKind 永远 terrain（会话 220104: 327/555 段）；
         -- ② peakDepth*10 把贴墙的玩家推离墙，且 depth>0 会短路“撞墙位置钉住”。
         wallContactSlack = 2.0,
+        -- 跳跃型敌人（Trite=跳蛛=29:1、Hopper=29:0、Eggy=29:2、Tainted Hopper=29:3、
+        -- Leaper=34、Flaming Hopper=54、Spider=85、Spider_L2=215）的落点预判。
+        -- 依据（wiki/Trite + 用户实机）: 跳距随玩家距离变化、直线朝玩家、节奏固定。
+        -- 实测腾空时自报速度 8~10px/帧、落地 ≈0 → 用速度判腾空（位置差分会被
+        -- “同一位置进相邻两帧”的脏采样毁掉）。
+        hopPredict = true,
+        hopTypes = { [29] = true, [34] = true, [54] = true, [85] = true, [215] = true },
+        hopAirSpeed = 3.0,          -- |实体自报速度| ≥ 它视为腾空（px/帧）
+        hopMinPeriod = 8,           -- 起跳间隔下限（帧），低于视为抖动不采信
+        hopMaxPeriod = 180,         -- 起跳间隔上限（帧）
+        hopDefaultFlight = 12,      -- 首次观测到滞空时长前的兜底（帧）
+        hopLeadFrames = 30,         -- 起跳还有这么多帧以内才预警（= plannerHorizonWide）
+        hopMaxLeadTotal = 34,       -- 起跳+滞空合计不得超过它（否则落点看不见，预警无意义）
+        hopMinLeap = 30,            -- 预测跳距下限（px）
+        hopMaxLeap = 340,           -- 预测跳距上限（px，房间半高 140 → 允许跳半屏）
+        hopAimMaxDeg = 75,          -- 实测跳向与“玩家方向”平均夹角超过它就放弃瞄准预测
         stuckFrames = 6,
         escapeMaxNodes = 48,
         terrainRefreshFrames = 3,

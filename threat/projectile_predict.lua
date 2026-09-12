@@ -89,16 +89,17 @@ local function fitCircle(p1, p2, p3)
     return { cx = ux, cy = uy, r = r, omega = dAng / dt, a0 = a2_ }
 end
 
---- entry 是否呈曲线运动（历史≥3 且拟合出小圆）
+--- entry 是否呈曲线运动（拟合出小圆）
 --- curvatureMinOmega: 角速度低于此视为直线
+--- 只用去重样本：重复样本（同一位置进相邻两帧）会让三点圆拟合退化/反向
+--- （环形旋转弹幕、弧线弹幕都会因此被当成直线外推，用户 2026-09-12 反馈）。
 function Predict.isCurved(entry, minOmega)
-    if not entry.history or entry.historyCount < 3 then return false end
+    local d = History.distinctSamples(entry, 3)
+    if #d < 3 then return false end
     -- 脏样本（同一位置被记进相邻两帧）会让弧线/抛物线拟合把轨迹掰向反方向
     -- （回放 220104 受击2: 直线弹幕被预测成掉头 → 规划器判无威胁），必须先过滤
     if not History.motionConsistent(entry) then return false end
-    local h = entry.history
-    local n = entry.historyCount
-    local c = fitCircle(History.recent(entry,2), History.recent(entry,1), History.recent(entry,0))
+    local c = fitCircle(d[1], d[2], d[3])
     if not c then return false end
     return math.abs(c.omega) >= (minOmega or 0.02)
 end
@@ -108,43 +109,47 @@ end
 ---------------------------------------------------------------
 
 --- 从速度历史检测追踪型弹幕（速度方向持续变化 = 追踪/自导引）
---- 返回: true 如果速度方向在连续样本间有显著转向
+--- 返回: true 如果自报速度方向在连续样本间有显著转向
+--- 用「自报 vel」而不是位置差分：mod 回调频率可高于游戏逻辑更新频率，位置会被
+--- 记成重复样本（差分不可靠），而 vel 是引擎自报的、可信（见 AGENTS.md 坑 13）。
+--- 样本仍走去重列表，避免同一逻辑帧被计两次。
 local TRACKING_ANGLE_THRESHOLD = 0.05 -- 每帧转向角阈值（弧度，约3度）
 function Predict.isTracking(entry)
-    if not entry.history or entry.historyCount < 3 then return false end
+    local d = History.distinctSamples(entry, 4)
+    if #d < 3 then return false end
     if not History.motionConsistent(entry) then return false end
-    local h = entry.history
-    local n = entry.historyCount
-    -- 取最近3个样本的速度方向，检查是否持续转向
     local turns = 0
-    for i = n - 2, n - 1 do
-        local v1 = History.recent(entry,n-i).vel
-        local v2 = History.recent(entry,n-i-1).vel
-        local len1 = v1:Length()
-        local len2 = v2:Length()
-        if len1 > 0.5 and len2 > 0.5 then
-            local dot = (v1.X * v2.X + v1.Y * v2.Y) / (len1 * len2)
-            dot = mathext.clamp(dot, -1, 1)
-            local angle = math.acos(dot)
-            if angle > TRACKING_ANGLE_THRESHOLD then
-                turns = turns + 1
+    for i = 2, #d do
+        local v1, v2 = d[i-1].vel, d[i].vel
+        if v1 and v2 then
+            local len1, len2 = v1:Length(), v2:Length()
+            if len1 > 0.5 and len2 > 0.5 then
+                local dot = mathext.clamp((v1.X * v2.X + v1.Y * v2.Y) / (len1 * len2), -1, 1)
+                if math.acos(dot) > TRACKING_ANGLE_THRESHOLD then turns = turns + 1 end
             end
         end
     end
-    return turns >= 2 -- 连续两帧都有转向 = 追踪型
+    return turns >= 1 -- 明显转向 = 追踪型（误判代价低：只是改用趋势速度外推）
+end
+
+--- 解析式：从历史取值（旧→新），全部走“去重样本”
+local function lastDistinct(entry, n)
+    return History.distinctSamples(entry, n or 3)
 end
 
 --- 追踪型弹幕命中检测：用最近速度趋势线性外推（追踪弹通常朝玩家逼近）
 --- 比纯直线闭式解更准（考虑了速度变化趋势），但不如完整弧线拟合
 function Predict.timeToHitTracking(entry, playerPos, playerVel, playerRadius, horizon)
-    if not entry.history or entry.historyCount < 2 then
+    local d = lastDistinct(entry, 3)
+    if #d < 2 then
         return Predict.timeToHitMoving(entry, playerPos, playerVel, playerRadius, horizon)
     end
-    local h = entry.history
-    local n = entry.historyCount
-    -- 用最近两帧的平均速度（趋势速度）代替瞬时速度
-    local avgVelX = (History.recent(entry,1).vel.X + History.recent(entry,0).vel.X) / 2
-    local avgVelY = (History.recent(entry,1).vel.Y + History.recent(entry,0).vel.Y) / 2
+    -- 用最近两个「自报速度」的平均值（趋势速度）代替瞬时速度
+    local va, vb = d[#d - 1].vel, d[#d].vel
+    if not va or not vb then
+        return Predict.timeToHitMoving(entry, playerPos, playerVel, playerRadius, horizon)
+    end
+    local avgVelX, avgVelY = (va.X + vb.X) / 2, (va.Y + vb.Y) / 2
     local rel = playerPos - entry.pos
     local vrelX = playerVel.X - avgVelX
     local vrelY = playerVel.Y - avgVelY
@@ -154,11 +159,10 @@ end
 
 --- 弧线命中检测: 沿圆弧步进采样（步长2帧），返回首帧命中或 nil
 function Predict.timeToHitArc(entry, playerPos, playerVel, playerRadius, horizon)
-    if not entry.history or entry.historyCount < 3 then return nil end
+    local d = lastDistinct(entry, 3)
+    if #d < 3 then return nil end
     if not History.motionConsistent(entry) then return nil end
-    local h = entry.history
-    local n = entry.historyCount
-    local c = fitCircle(History.recent(entry,2), History.recent(entry,1), History.recent(entry,0))
+    local c = fitCircle(d[1], d[2], d[3])
     if not c then return nil end
 
     local combined = entry.radius + playerRadius
@@ -191,11 +195,10 @@ local PARABOLIC_ACCEL_THRESHOLD = 0.3
 --- 检测抛物线运动：二阶位置差分呈恒定加速度，且加速度方向与速度变化一致
 --- 优先于圆弧检测：抛物线局部可近似圆弧，但物理特征（恒定加速度方向）更可靠
 function Predict.isParabolic(entry)
-    if not entry.history or (entry.historyCount or 0) < 3 then return false end
+    local d = lastDistinct(entry, 3)
+    if #d < 3 then return false end
     if not History.motionConsistent(entry) then return false end
-    local p0 = History.recent(entry,2)
-    local p1 = History.recent(entry,1)
-    local p2 = History.recent(entry,0)
+    local p0, p1, p2 = d[1], d[2], d[3]
     local dt01 = p1.frame - p0.frame
     local dt12 = p2.frame - p1.frame
     if dt01 <= 0 or dt12 <= 0 then return false end
@@ -215,12 +218,11 @@ end
 
 --- 抛物线位置预测：pos + vel*t + 0.5*accel*t²
 function Predict.predictParabolicPos(entry, t)
-    if not entry.history or (entry.historyCount or 0) < 3 then
+    local d = lastDistinct(entry, 3)
+    if #d < 3 then
         return entry.pos + entry.vel * t
     end
-    local p0 = History.recent(entry,2)
-    local p1 = History.recent(entry,1)
-    local p2 = History.recent(entry,0)
+    local p0, p1, p2 = d[1], d[2], d[3]
     local dt01 = p1.frame - p0.frame
     local dt12 = p2.frame - p1.frame
     if dt01 <= 0 or dt12 <= 0 then return entry.pos + entry.vel * t end
@@ -235,15 +237,14 @@ end
 --- 抛物线碰撞检测：逐步采样（步长2帧），返回首帧命中或 nil
 --- 同时检测速度反向（抛物线最高点后下落），超过最高点+余量后截断
 function Predict.timeToHitParabolic(entry, playerPos, playerVel, playerRadius, horizon)
-    if not entry.history or (entry.historyCount or 0) < 3 then
+    local d = lastDistinct(entry, 3)
+    if #d < 3 then
         return Predict.timeToHitMoving(entry, playerPos, playerVel, playerRadius, horizon)
     end
     if not History.motionConsistent(entry) then
         return Predict.timeToHitMoving(entry, playerPos, playerVel, playerRadius, horizon)
     end
-    local p0 = History.recent(entry,2)
-    local p1 = History.recent(entry,1)
-    local p2 = History.recent(entry,0)
+    local p0, p1, p2 = d[1], d[2], d[3]
     local dt01 = p1.frame - p0.frame
     local dt12 = p2.frame - p1.frame
     if dt01 <= 0 or dt12 <= 0 then

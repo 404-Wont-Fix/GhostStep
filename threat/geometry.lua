@@ -69,7 +69,7 @@ function G.prepare(e,frame,horizon)
     local age=math.max(0,frame-(e.lastFrame or frame))
     c.start,c.ending=G.window(e,frame)
     c.radius=(e.radius or 0)+(e.uncertainty or 0)
-    c.linear=e.kind~="laser" and not ((e.kind or "projectile")=="projectile"
+    c.linear=e.kind~="laser" and not e.hopOn and not ((e.kind or "projectile")=="projectile"
         and ((e.historyCount or 0)>=3) and (Predict.isCurved(e) or Predict.isTracking(e) or Predict.isParabolic(e)))
     if c.linear then
         c.x,c.y=e.pos.X+e.vel.X*age,e.pos.Y+e.vel.Y*age
@@ -118,7 +118,10 @@ end
 -- 包围可达区域筛选。长激光按长度扩展，不能只拿光源附近的九宫格。
 function G.reachable(e,p,r,speed,horizon)
     local extent=e.endPos and e.pos:Distance(e.endPos) or (e.length or 0)
-    local reach=r+(e.radius or 0)+(e.uncertainty or 0)+extent+((e.speed or e.vel:Length())+speed)*horizon
+    -- 跳跃威胁：待跳时自报速度≈0，但伤害发生在跳距之外的落点 → 用跳距扩展可达范围，
+    -- 否则安静的跳蛛会被“reachable”预筛掉，预测永远不会生效。
+    local leap=(e.hopOn and (e.hopLen or 0)) or 0
+    local reach=r+(e.radius or 0)+(e.uncertainty or 0)+extent+leap+((e.speed or e.vel:Length())+speed)*horizon
     return e.pos:Distance(p)<=reach
 end
 return G

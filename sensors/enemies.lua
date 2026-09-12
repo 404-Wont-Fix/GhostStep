@@ -7,6 +7,11 @@
 
 local EnemySensor = {}
 
+local HopTracker = require("entities/hop_tracker")
+
+-- 跳跃型敌人节拍跟踪（房间切换时 reset；entity.Index 会在新房间复用）
+local hop = HopTracker.create({})
+
 local _enemyLoggedThisRoom = false
 local _enemyLastCount = -1
 
@@ -14,6 +19,11 @@ local _enemyLastCount = -1
 local TYPE_ULTRA_GREED_COIN = 293 -- Ultra Greed 扔的硬币，有接触伤害
 local TYPE_WIZOOB = 219           -- 幽灵敌人，appear 动画时无接触伤害
 local TYPE_FIREPLACE = 33         -- 火堆：静态接触伤害，火焰范围 >> entity.Size
+-- ENTITY_FROZEN_ENEMY（enums.lua / entities2.xml id=963 name="Frozen Enemy"）：
+-- 被冰冻打死的敌人变成的冰雕：collisionDamage=0（撞上去不扣血），
+-- 玩家可以走进去把它踢滑、它只挡敌人子弹。用户 2026-09-12 反馈：
+-- “被冰冻住的敌人无法推动、还会触发避让” → 它不是接触威胁，必须整个跳过。
+local TYPE_FROZEN_ENEMY = 963
 
 -- 火堆危险形状：火堆是静态格实体（Type 33），碰撞体是方形，不是圆。
 -- 两个独立事实：
@@ -36,11 +46,16 @@ end
 
 --- 是否为接触威胁（活着且有敌意的 NPC 本体）
 --- 返回: true/false，或 "fireplace"（火堆特判，radius 需放大）
-local function isContactThreat(e)
+local function isContactThreat(e, config)
     -- 特殊类型：Ultra Greed 硬币直接视为接触威胁（可能没有 ToNPC）
     if e.Type == TYPE_ULTRA_GREED_COIN then
         local okDead, dead = pcall(function() return e:IsDead() end)
         return not (okDead and dead)
+    end
+
+    -- 冰雕像：无接触伤害、可被玩家踢走（entities2.xml collisionDamage=0）
+    if e.Type == TYPE_FROZEN_ENEMY then
+        if config == nil or config.skipFrozenStatues ~= false then return false end
     end
 
     -- 特殊类型：火堆——静态接触伤害源。不走 ToNPC/IsActiveEnemy 通道
@@ -97,7 +112,7 @@ function EnemySensor.collect(player, tracker, frame, config)
     local count = 0
     for i = 1, #entities do
         local e = entities[i]
-        local threatKind = isContactThreat(e)
+        local threatKind = isContactThreat(e, config)
         if threatKind then
             count = count + 1
             local radius = e.Size
@@ -107,7 +122,7 @@ function EnemySensor.collect(player, tracker, frame, config)
                 radius = math.max(radius or 0, FIREPLACE_HALF)
                 box = true
             end
-            entries[count] = {
+            local entry = {
                 index = e.Index,
                 seed = e.InitSeed,
                 kind = "enemy",
@@ -125,8 +140,25 @@ function EnemySensor.collect(player, tracker, frame, config)
                     return 1
                 end)(),
             }
+            -- 跳跃型敌人（跳蛛 Trite 等）：测节奏 → 预测下一次起跳与落点
+            if config.hopPredict and config.hopTypes and config.hopTypes[e.Type] then
+                local okHop, hint = pcall(HopTracker.observe, hop, e, player, frame, config)
+                if okHop and hint then
+                    entry.hopOn = true
+                    -- 取整：Lua 5.3 的 string.format("%d") 不接受浮点（会直接报错），
+                    -- 而节奏/滞空都是 EWMA 出来的浮点数
+                    entry.hopIn = math.floor(hint.inFrames + 0.5)
+                    entry.hopFlight = math.floor(hint.flight + 0.5)
+                    entry.hopLX, entry.hopLY = hint.lx, hint.ly
+                    entry.hopLen = hint.len
+                    entry.hopPeriod = hint.period
+                    entry.hopAimErr = hint.aimErr
+                end
+            end
+            entries[count] = entry
         end
     end
+    pcall(HopTracker.expire, hop, frame)
 
     -- 诊断：只在敌人数变化时打日志（0→N，N→0），避免刷屏
     if config.diagnosticsEnabled and (not _enemyLoggedThisRoom or count ~= (_enemyLastCount or 0)) then
@@ -162,6 +194,7 @@ end
 function EnemySensor.resetRoom()
     _enemyLoggedThisRoom = false
     _enemyLastCount = -1
+    pcall(HopTracker.reset, hop)
 end
 
 return EnemySensor

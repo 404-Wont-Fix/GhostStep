@@ -68,11 +68,13 @@ local function getArcParams(entry, frame)
     end
     -- 拟合
     local circle = nil
-    if entry.history and entry.historyCount and entry.historyCount >= 3
-        and History.motionConsistent(entry) then
+    -- 只用去重样本：重复样本（同一位置被记进相邻两帧）会让三点圆拟合退化，
+    -- 环形旋转弹幕就因此退回直线外推（用户 2026-09-12 反馈“环转弹幕躲得差”）。
+    local d = History.distinctSamples(entry, 3)
+    if #d >= 3 and History.motionConsistent(entry) then
         -- 脏样本过滤（同一位置被记进相邻两帧会让拟合把轨迹掰向反方向，
         -- 见 entities/tracker.lua motionConsistent 注释）
-        circle = fitCircle3(History.recent(entry,2), History.recent(entry,1), History.recent(entry,0))
+        circle = fitCircle3(d[1], d[2], d[3])
         if circle and math.abs(circle.omega) < 0.02 then
             circle = nil -- 角速度太低视为直线
         end
@@ -132,11 +134,11 @@ end
 -- 追踪型弹幕：平均速度外推
 ---------------------------------------------------------------
 local function trackingPos(entry, t)
-    if entry.history and entry.historyCount and entry.historyCount >= 2 then
-        local h = entry.history
-        local n = entry.historyCount
-        local avgVelX = (History.recent(entry,1).vel.X + History.recent(entry,0).vel.X) / 2
-        local avgVelY = (History.recent(entry,1).vel.Y + History.recent(entry,0).vel.Y) / 2
+    -- 趋势速度 = 最近两个「自报速度」的平均（自报 vel 可信；位置差分会被重复样本毁掉）
+    local d = History.distinctSamples(entry, 2)
+    if #d >= 2 and d[#d - 1].vel and d[#d].vel then
+        local va, vb = d[#d - 1].vel, d[#d].vel
+        local avgVelX, avgVelY = (va.X + vb.X) / 2, (va.Y + vb.Y) / 2
         return Vector(entry.pos.X + avgVelX * t, entry.pos.Y + avgVelY * t)
     end
     return entry.pos + entry.vel * t
@@ -169,6 +171,25 @@ function FutureMotion.pos(entry, t, frame)
         return entry.pos + entry.vel * t
     end
 
+    -- 跳跃型敌人（Trite=跳蛛 等）: 地面待跳 → 直线跳到“玩家当前所在”（跳距 clamp 到观测范围）
+    -- → 落地后停在落点。模型依据：跳蛛瞄准起跳瞬间玩家所在、跳距随玩家距离变化，
+    -- 节奏固定（entities/hop_tracker.lua 里按实测速度/位置标定）。
+    if entry.hopOn then
+        local inF = entry.hopIn or 0
+        local sx = entry.pos.X + entry.vel.X * inF
+        local sy = entry.pos.Y + entry.vel.Y * inF
+        if t <= inF then
+            return Vector(entry.pos.X + entry.vel.X * t, entry.pos.Y + entry.vel.Y * t)
+        end
+        local flight = entry.hopFlight or 12
+        if flight < 1 then flight = 1 end
+        local k = (t - inF) / flight
+        if k > 1 then k = 1 end
+        local lx = entry.hopLX or sx
+        local ly = entry.hopLY or sy
+        return Vector(sx + (lx - sx) * k, sy + (ly - sy) * k)
+    end
+
     -- 弹幕类: 检查运动模式
     if kind == "projectile" then
         -- 圆弧弹幕
@@ -181,15 +202,12 @@ function FutureMotion.pos(entry, t, frame)
             )
         end
         -- 抛物线弹幕（爆炸弹丸等：2D阴影先减速再加速，恒定加速度）
-        if entry.history and entry.historyCount and entry.historyCount >= 3 then
-            local Predict = require("threat/projectile_predict")
+        local Predict = require("threat/projectile_predict")
+        if #History.distinctSamples(entry, 3) >= 3 then
             if Predict.isParabolic(entry) then
                 return Predict.predictParabolicPos(entry, t)
             end
-        end
-        -- 追踪型弹幕
-        if entry.history and entry.historyCount and entry.historyCount >= 3 then
-            local Predict = require("threat/projectile_predict")
+            -- 追踪型弹幕
             if Predict.isTracking(entry) then
                 return trackingPos(entry, t)
             end

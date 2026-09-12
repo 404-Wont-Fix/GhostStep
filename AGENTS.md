@@ -150,6 +150,9 @@ direction_smooth / input_synthesizer / threat_level / spatial` **都是死代码
 | **候选按"混合后的实际输出"评估** | 只验证 AI 原始方向时，15% 的玩家输入会把安全方向拉回威胁（斜向擦边 35% 撞上） |
 | **脏轨迹样本不参与高阶拟合**（`Tracker.motionConsistent`） | mod 回调可能比游戏逻辑更新更快 → 同一位置进相邻两帧 → 抛物线拟合把直线弹幕掰成掉头（复现：`isParabolic=true`、规划器 `nominal_safe`；修后直线外推 + `reduce_exposure`） |
 | **贴墙接触不算穿透**（`wallContactSlack=2.0`，只作用于硬地形） | 引擎允许玩家中心贴到距实心格 9.2px，`radius=10` → 贴墙恒有 0.6px 假穿透；抹掉后贴墙不再被推开、钉子逻辑在墙边恢复工作 |
+| **冰雕像（EntityType 963 / ENTITY_FROZEN_ENEMY）不算威胁** | entities2.xml id=963 name="Frozen Enemy" `collisionDamage=0`：撞上去不扣血、玩家走进去把它踢滑（Uranus/Ice Cube 的冰雕），它只挡敌人子弹。用户 2026-09-12 反馈"冰冻住的敌人推不动、还触发避让" |
+| **跳跃型敌人（Trite=跳蛛=29:1）用"节奏 + 落点"预判，不靠直线外推** | wiki/Trite："spider variant of the Hoppers. Leaps with less frequency, but at greater distances"；用户实测跳距随玩家距离、直线朝玩家、节奏固定。闭环 A/B（`tests/shared_control.lua`）：同样 200 帧、同样 PRNG，旧的首线外推被踩 5 次，新的 0 次 |
+| **轨迹高阶模型（弧线/抛物线/追踪）改用"去重样本"，不再一刀切禁用** | mod 回调频率可高于逻辑帧 → 同一位置进相邻两帧。旧的 `motionConsistent` 看"最近两步"，一遇到重复样本就把弧线/抛物线/追踪全关掉（环形旋转弹幕因此退回直线外推）。改成去重后再校验"量级 + 方向"，并在剔除后仍有 ≥3 个不同位置时才做高阶拟合 |
 | **玩家/友方地面液体永不算威胁**（`PLAYER_CREEP_*` + `FLAG_FRIENDLY` 链） | 这些 variant 的生成者常为空 → 旧实现把自己的水迹当敌方避让（复现 4 条 → 2 条） |
 | **飞行免疫地面液体/地刺/TNT，但仍受火堆与尖刺岩石伤害** | wiki/Flight + wiki/TNT（TNT 只在被摧毁时爆炸）；飞行时 TNT 不再当危险 |
 | **近失（擦边）只在平手时优先，且要差 ≥2 分才改写** | 擦边 2px 与从容 20px 同 risk → 平手按"贴近意图"选 → 选擦边；但阈值太小会为 0.1px 裕量把方向掰到意图外 |
@@ -165,6 +168,16 @@ direction_smooth / input_synthesizer / threat_level / spatial` **都是死代码
 3. **无时序规划**：候选是"整段固定方向"，不会"等弹幕过去再走"。机关走廊靠"缩窄 + 只在蓄力期"缓解。
 4. `minHoldFrames` / `input_synthesizer` / `escape_lock` **不是**解决卡手的正确方向
    （混合已在 `input_writer` 内实现；保持时长会加重抢操作）。别再接入它们。
+5. **环形/旋转弹幕（用户 2026-09-12 反馈 #2）现状只能算"部分改善"**：
+   * 回放证据（session_20260912_000434，detail4 逐帧）：**没有一条弹幕在曲线飞行**（58 条轨迹最大每帧转角 < 10°），
+     但存在"同一发射点、方向均分"的扇形/环形弹幕（room 83 帧 71091 起 4 发 90° 均分；room 97 帧 105702
+     6 发 60° 均分、速度 12px/帧）。所以这不是"弹道弯了"，而是**多弹幕 + 时机**问题。
+   * 实测那两例受击时的情形：玩家离发射点只有 **31.6px**、弹幕 12px/帧 → 2~3 帧内就穿身，
+     规划器判 `reduce_exposure`/`no_improving_action`（不是选错方向，是**来不及**）；
+     并且 `metrics.complete=false`、`checks=1056` ≈ 预算上限 → 稠密场景下**搜索被预算截断**（19 个候选只算了 10 个）。
+   * 因此下一步要动的是：①让规划器更早意识到"站在环形发射者旁边"危险（发射者前摇/环形的预判）；
+     ②**两段式搜索**（廉价预排序 → 只对前几名做全量评估）把稠密场景的覆盖补回来。
+     单纯的弧线拟合在这两例里帮不上（弹道本来是直的）。
 
 ## 8. 回放数据与复核口径
 
@@ -185,8 +198,39 @@ direction_smooth / input_synthesizer / threat_level / spatial` **都是死代码
 | **`avoidance_start` 里 terrain 占比** | 应大幅低于 59%（会话 220104 的量级）；仍高就检查 `wallContactSlack` 与 rooms 的 IsPositionInRoom |
 | **每千帧避让段数** | 历史 7~13；贴墙假触发修掉后应明显回落（少插手） |
 | **`avoidance_start` 里 effect 占比** | 若仍有玩家/友方水迹（看着是自己踩出来的液体）→ 查 `PLAYER_CREEP_*` 与 `FLAG_FRIENDLY` 链 |
+| **`metrics.triggerKind` 出现 `hop`** | 说明跳蛛预判在生效；`detail=4` 快照里 `hopOn/hopIn/hopFlight/hopLX/hopLY` 可直接核对节奏与落点 |
+| **敌人采集日志里不再出现 963** | 冰雕像（Frozen Enemy）应完全不被采集；若仍在，查 `skipFrozenStatues` |
 
 ## 9. 修复历史（近期，含根因与证据）
+
+### 2026-09-12 夜 — 冰雕像误判、跳蛛（Trite）预判、脏样本不再关掉高阶轨迹模型
+
+用户微信反馈 3 条（先复制日志 → 再分析 `analysis/20260912_pre_play/`）：
+
+| 反馈 | 根因 | 证据 / 复现 |
+|---|---|---|
+| ① 被冰冻住的敌人推不动、还触发避让 | `sensors/enemies.lua` 把所有 NPC 当接触威胁；冰雕像 `Type=963`（entities2.xml `Frozen Enemy`）本无接触伤害（`collisionDamage=0`，玩家可踢走），却因为 `CollisionDamage or 1` 的兵底变成了“会伤害的敌人” | `entities2.xml` id=963；回归 `frozen statue (ENTITY_FROZEN_ENEMY 963) is not a contact threat`（关掉豁免必须重现旧行为） |
+| ② 环形旋转弹幕（像卫星）躲得差 | 不是“弹道弯了”：逐帧 detail4 追迹里 58 条弹幕**没有一条在曲线飞行**（最大每帧转角 <10°）；真实情形是**多发射 + 时机**：受击时玩家离发射点只有 31.6px、弹幕 12px/帧（2~3 帧穿身），且稠密场景下 `complete=false / checks=1056`（19 候选只算了 10 个）。已做：高阶轨迹模型不再因重复样本被整体关掉（见下行）；未做：发射者/环形的提前预警、两段式搜索（见第 7 节） | 见第 7 节第 5 条 |
+| ③ 跳蛛（Trite）容易被踩 | 待机时自报速度≈ 0 → 规划器只看到“一个不动的敌人”，`nominal_safe` 不介入；等到腾空（8~10px/帧）发现时只剩 3~4 帧 → 所有候选都负余量（`no_improving_action`），玩家被硬控 | 回放 20260912_221214 帧 47884（enemy:4 r=13 跳距 8.32px/帧、19 个候选全部 -8.9~-13.7）；闭环 A/B：旧 5 次被踩、新 0 次 |
+
+改动：
+- `sensors/enemies.lua`：`Type==963` 直接跳过（`skipFrozenStatues` 可关掉对照）；新增跳跃型敌人观测链
+  （`hopTypes = {29 Hopper/Trite/Eggy, 34 Leaper, 54 Flaming Hopper, 85 Spider, 215 Spider_L2}`，
+  只有“显著跳跃”（净位移 ≥ 30px）才计入节拍）
+- `entities/hop_tracker.lua`（新）：用**实体自报速度**判腾空（位置差分会被“同一位置进相邻两帧”毁掉）→
+  量起跳间隔/滞空/跳距/是否瞄准玩家 → 预测下一次起跳与落点（落点 = 玩家在起跳那一刻的位置，
+  跳距 clamp 到 [30,340]）；随机的侧向跳鼠（平均夹角 >75°）不做预测
+- `threat/future_motion.lua`：`kind=enemy` 且 `hopOn` 时按“待机 → 直线跳到落点 → 停住”外推
+- `threat/geometry.lua`：跳蛛不进线性快路径（`c.linear=false`）；`reachable` 用跳距扩展
+- `decision/predictive.lua`：有跳跃威胁时把窗口撑到“起跳+滞空+2”（否则落点永远在窗口外）；
+  `triggerKind="hop"` 便于回放归因
+- `entities/tracker.lua` + `threat/projectile_predict.lua` + `threat/future_motion.lua`：
+  新增 `distinctSamples()`（去重采样）；`motionConsistent` 改成“去重后校验量级+方向”；
+  弧线/抛物线/追踪改用去重样本 → 不再因为一次重复采样就把高阶模型全部关掉
+- `config/defaults.lua`：`skipFrozenStatues` / `hop*` 一组参数
+- `recording/snapshot.lua`：detail4 快照记 `hopOn/hopIn/hopFlight/hopLX/hopLY/hopLen/hopPeriod/hopAimErr`
+- 测试：`tests/shared_control.lua` 新增 5 条（冰雕像 / 环形弹幕去重后仍判弧线 /
+  节拍学习 + 落点 / 侧向跳不误报 / 规划器提前躲 + 闭环 A/B），Lua 5.1+5.3 全绿（SHARED CONTROL 49 passed）
 
 ### 6f0a1c1 之后 — 贴墙假穿透、敌我地面液体分辨、飞行地面免疫（2026-09-11 夜）
 

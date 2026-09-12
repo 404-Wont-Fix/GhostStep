@@ -144,26 +144,53 @@ function Tracker.recent(entry, offset)
     return entry.history[idx]
 end
 
+--- 最近 n 个“位置彼此不同”的样本（旧→新）。重复样本（同一位置被记进相邻两帧）
+--- 会让一阶/二阶差分得到 0 位移或虚假的巨大加速度，三点圆拟合也会退化，
+--- 所以所有高阶模型（弧线/抛物线/追踪）都必须建立在**去重后的样本**上。
+--- 历史不足 n 个不同位置时返回较短数组（调用方按 #ret 判断）。
+function Tracker.distinctSamples(entry, n)
+    n = n or 3
+    local newest = {}
+    local count = entry.historyCount or 0
+    local lastX, lastY
+    for offset = 0, count - 1 do
+        local s = Tracker.recent(entry, offset)
+        if s then
+            local x, y = s.pos.X, s.pos.Y
+            if lastX == nil or math.abs(x - lastX) > 1e-6 or math.abs(y - lastY) > 1e-6 then
+                newest[#newest + 1] = s
+                lastX, lastY = x, y
+                if #newest >= n then break end
+            end
+        end
+    end
+    local ordered = {}
+    for i = #newest, 1, -1 do ordered[#ordered + 1] = newest[i] end
+    return ordered
+end
+
 --- 历史样本与“实体自报速度”的一致性校验（供弧线/抛物线/追踪型预测器使用）。
 --- 为什么要这个：mod 的回调频率可能高于游戏逻辑更新频率（双帧计数器），
 --- tracker 会把**同一位置记进相邻两帧**。那时二阶差分看起来像“每帧减速 5px/帧²”的
 --- 巨大加速度，抛物线拟合会把轨迹掰向反方向 ——
 --- 回放 220104 受击2 就是实例：直线下落的弹幕被预测成掉头向下，规划器判“无威胁”，玩家挨打。
---- 判据：最近一步的位移长度要与自报速度量级相当（0.5~3 倍），否则退回直线外推。
---- 注：采样间隔本身不可靠（同一帧可能被采集两次），所以只用于剔除脏样本，
---- 不用它反推速度。
+--- 判据（只去重后校验最近一步，不反推速度）：
+---   ① 量级：|步长/dt| 与自报速度同量级（0.3~3 倍）。dt 不可靠（同一逻辑帧可能被采两次），
+---      所以区间放宽，只挡“0 位移 / 反向 / 数量级不符”的脏样本；
+---   ② 方向：步进方向与自报速度夹角 ≤ ~72°，这是抛物线误判的直接特征。
+--- 剔除后仍有 ≥3 个不同位置的样本时，才允许弧线/抛物线拟合。
 function Tracker.motionConsistent(entry)
-    local n=entry.historyCount or 0
-    if n<3 then return false end
-    local p1,p2=Tracker.recent(entry,1),Tracker.recent(entry,0)
-    if not p1 or not p2 then return false end
-    local dt=p2.frame-p1.frame
-    if dt<=0 then return false end
-    local vx,vy=entry.vel and entry.vel.X or 0,entry.vel and entry.vel.Y or 0
-    local velLen=math.sqrt(vx*vx+vy*vy)
-    if velLen<=1 then return true end -- 慢速：位置差本来就不准，不做高阶拟合更有意义
-    local sx,sy=(p2.pos.X-p1.pos.X)/dt,(p2.pos.Y-p1.pos.Y)/dt
-    local stepLen=math.sqrt(sx*sx+sy*sy)
-    return stepLen>=velLen*0.5 and stepLen<=velLen*3
+    local d = Tracker.distinctSamples(entry, 2)
+    if #d < 2 then return false end
+    local p1, p2 = d[1], d[2]
+    local dt = p2.frame - p1.frame
+    if dt <= 0 then return false end
+    local vx, vy = entry.vel and entry.vel.X or 0, entry.vel and entry.vel.Y or 0
+    local velLen = math.sqrt(vx * vx + vy * vy)
+    if velLen <= 1 then return true end -- 慢速：位置差本来就不准，不做高阶拟合更有意义
+    local sx, sy = (p2.pos.X - p1.pos.X) / dt, (p2.pos.Y - p1.pos.Y) / dt
+    local stepLen = math.sqrt(sx * sx + sy * sy)
+    if stepLen < velLen * 0.3 or stepLen > velLen * 3 then return false end
+    return (sx * vx + sy * vy) >= 0.3 * stepLen * velLen
 end
 return Tracker

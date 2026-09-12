@@ -31,10 +31,18 @@ function Planner.run(state,deps,frame)
     local all=deps.getHazards and deps.getHazards(frame) or (deps.hazardQuery and deps.hazardQuery.hazards) or {}
     local requestedHorizon=horizon
     local wide=false
+    local hopSpan=0
     for i=1,#all do
         local e=all[i]
         if e.kind=="bomb" or e.kind=="laser" or (e.radius or 0)>=32 then wide=true; break end
+        -- 跳跃威胁（跳蛛 Trite 等）：窗口必须盖住“起跳+滞空”才能看到落点，
+        -- 否则落点永远在窗口外 → 永远不会提前躲（用户 2026-09-12 反馈“躲避能力不够”）。
+        if e.hopOn then
+            local span=(e.hopIn or 0)+(e.hopFlight or 0)+2
+            if span>hopSpan then hopSpan=span end
+        end
     end
+    if hopSpan>0 then wide=true end
     -- 密集圆形弹幕优先保住近期候选搜索。大范围攻击保留提前撤离窗口。
     -- 实测: 最大速度 ≈4px/帧 → 18 帧只能跑 ≈73px，而炸弹要跑出 ≈100px。
     -- 炸弹/激光/大体积威胁时动态扩窗（只扩不缩），否则模型永远看不到可行解。
@@ -42,6 +50,9 @@ function Planner.run(state,deps,frame)
         horizon=math.max(horizon,math.min(cfg.plannerHorizonWide or 30,maxHorizon))
     elseif #all>160 then horizon=math.min(horizon,10)
     elseif #all>64 then horizon=math.min(horizon,14) end
+    -- 落点必须在窗口内：跳跃威胁把窗口撑到“起跳+滞空+2”（上限 plannerHorizonMax）
+    -- 取整：hopIn/hopFlight 来自 EWMA，可能是浮点；Lua 5.3 的 %d 不接受浮点
+    if hopSpan>0 then horizon=math.max(horizon,math.min(math.floor(hopSpan+0.5),maxHorizon)) end
     local hazards,caches={},{}
     for i=1,#all do
         if Geometry.reachable(all[i],p.position,p.radius+5,math.max(m.speed,m.b/(1-m.a)),horizon) then
@@ -267,7 +278,8 @@ function Planner.run(state,deps,frame)
         d.usedBudgetMs=Isaac.GetTime()-begin
         metrics.selectedRisk=best.risk; metrics.selectedId=best.id
         metrics.triggerId=base.hitEntry and base.hitEntry.id
-        metrics.triggerKind=base.hitEntry and base.hitEntry.kind
+        -- triggerKind: 跳跃型敌人标记成 "hop"，回放里能一眼看出是“提前躲跳蛛”还是普通接触威胁
+        metrics.triggerKind=base.hitEntry and ((base.hitEntry.hopOn and "hop") or base.hitEntry.kind)
             or (initialDepth>0 and "terrain")
             or ((initialDanger>0 or (base.spikeTicks or 0)>0) and "spike" or nil)
         metrics.initialPenetration=initialDepth

@@ -153,7 +153,10 @@ function Snapshot.finalize(snap, state, detailLevel, hazards, config)
                 x=h.pos.X,y=h.pos.Y,vx=h.vel.X,vy=h.vel.Y,r=h.radius,
                 ex=h.endPos and h.endPos.X,ey=h.endPos and h.endPos.Y,length=h.length,angle=h.angle,rotSpd=h.rotSpd,
                 appearFrame=h.appearFrame,endFrame=h.endFrame,fuseFrames=h.fuseFrames,lastFrame=h.lastFrame,
-                predicted=h.predicted,confidence=h.confidence,uncertainty=h.uncertainty,rule=h.rule,animationFrame=h.animationFrame}
+                predicted=h.predicted,confidence=h.confidence,uncertainty=h.uncertainty,rule=h.rule,animationFrame=h.animationFrame,
+                -- 跳跃型敌人（跳蛛）预测快照：离线可核对“节奏/落点”是否准
+                hopOn=h.hopOn,hopIn=h.hopIn,hopFlight=h.hopFlight,hopLX=h.hopLX,hopLY=h.hopLY,
+                hopLen=h.hopLen,hopPeriod=h.hopPeriod,hopAimErr=h.hopAimErr}
             local History=require("entities/tracker")
             local history={}
             for offset=2,0,-1 do
