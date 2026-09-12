@@ -25,6 +25,15 @@ from collections import Counter
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def force_utf8():
+    """与 tools/gs.py 一致：Windows 控制台强制 UTF-8，避免中文乱码。"""
+    try:
+        if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf8"):
+            sys.stdout.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
 MIN_BYTES = 50_000          # 小于这个的多半只是会话头，没有分析价值
 STEAM_CANDIDATES = [
     r"D:\SteamLibrary\steamapps\common\The Binding of Isaac Rebirth",
@@ -55,6 +64,7 @@ def run(cmd):
 
 
 def main():
+    force_utf8()
     ap = argparse.ArgumentParser()
     ap.add_argument("--sessions", type=int, default=1, help="取最近几个会话（按文件时间）")
     ap.add_argument("--dir", default=None, help="回放目录（默认自动找 Steam mod 目录）")
@@ -76,7 +86,10 @@ def main():
     for p in picked:
         print(f"  选中 {p.name}  ({p.stat().st_size/1e6:.1f} MB, {time.strftime('%H:%M', time.localtime(p.stat().st_mtime))})")
 
-    stamp = time.strftime("%Y%m%d_%H%M")
+    # 目录名用被分析会话自己的时间戳（不用“当前时间”）：重跑同一局直接复用，
+    # 不会在 analysis/ 下堆一堆同样的副本。
+    tag = picked[0].stem.split("_")          # session_20260912_221214_<seed>_<n>
+    stamp = "_".join(tag[1:3]) if len(tag) >= 3 else time.strftime("%Y%m%d_%H%M")
     out = ROOT / "analysis" / f"{stamp}_play"
     out.mkdir(parents=True, exist_ok=True)
     print(f"\n[1/4] 备份到 {out}")

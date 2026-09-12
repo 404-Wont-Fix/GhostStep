@@ -28,7 +28,9 @@ direction_smooth / input_synthesizer / threat_level / spatial` **都是死代码
 |---|---|
 | 语法 + 行为 + 集成测试（需要 `pip install lupa`） | `python tests/run_smoke.py`（可加 `--lua 5.1/5.3`） |
 | **部署到游戏**（镜像同步） | `python tools/gs.py 4`（`--dry-run` 预览；`--sync` 不弹菜单，供脚本调用）；双击 `deploy.bat` 等价于同一条命令 |
-| 回放分析（中文 report.md/json + 4 个 csv） | `python tools/analyze_replay.py <回放.jsonl> --output <目录>` |
+| 回放分析（中文 report.md/json + csv） | `python tools/analyze_replay.py <回放.jsonl> --output <目录>` |
+| **玩后一条命令出全部报告**（备份最新回放 → 轨迹 → 跳蛛/动画核对 → 回放诊断 → 终端摘要） | `python tools/gs.py 5`（或 `5 --sessions 3` / `5 --dir <回放目录>`；等价于 `python tools/post_play.py`） |
+| 单独核对跳跃预判（实测前摇/落点误差/节拍） | `python tools/analyze_hop.py <traces 目录>`（traces 由 `tools/extract_traces.py` 生成） |
 | 回放可视化 | `python tools/replay_viewer.py --dir "<Steam>/mods/GhostStep3/recordings" --latest` |
 | **用真实规划器离线复现回放场景** | `python tools/repro_planner.py`（真实网格 + 回放威胁） |
 | **闭环运动复现**（逐帧重新决策 + 按 `maxDodgeWeight` 混合 + 运动模型积分，带 before/after 扫描） | `python tools/repro_fixes.py` |

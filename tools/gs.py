@@ -11,6 +11,9 @@ GhostStep3 工具箱 — 项目工具统一 CLI 入口
     python tools/gs.py 4                  # 直接: 部署到游戏目录
     python tools/gs.py 4 --sync           # 直接: 部署（不弹菜单，deploy.bat 用的就是这条）
     python tools/gs.py 4 --dry-run        # 直接: 预览会变化的文件（不写入）
+    python tools/gs.py 5                  # 直接: 玩后一键报告（最新会话）
+    python tools/gs.py 5 --sessions 3     # 直接: 最近 3 个会话
+    python tools/gs.py 5 --dir <回放目录>  # 直接: 指定回放目录（默认自动找 Steam）
 """
 
 import os
@@ -261,6 +264,42 @@ def tool_deploy(args=None):
             print("  无效选项")
 
 
+def tool_postplay(args=None):
+    """玩后一键报告：挑最新会话 → 备份 → 抽轨迹 → 跳蛛/动画核对 → 回放诊断 → 摘要。
+
+    真正的实现在 tools/post_play.py（也能单独跑），这里只做菜单封装与参数透传。
+    """
+    script = PROJECT_ROOT / "tools" / "post_play.py"
+    if not script.exists():
+        print(f"  ✗ 找不到 {script}")
+        return 1
+
+    if args:
+        return subprocess.run([sys.executable, str(script)] + args, cwd=str(PROJECT_ROOT)).returncode
+
+    while True:
+        print("\n--- 玩后一键报告 ---")
+        print("  1) 最新会话")
+        print("  2) 最近 3 个会话")
+        print(f"  3) 指定回放目录（默认 {GAME_RECORDINGS}）")
+        print("  0) 返回主菜单")
+        choice = read_choice()
+        if choice in (None, "0"):
+            return None
+        if choice == "1":
+            return subprocess.run([sys.executable, str(script)], cwd=str(PROJECT_ROOT)).returncode
+        if choice == "2":
+            return subprocess.run([sys.executable, str(script), "--sessions", "3"],
+                                  cwd=str(PROJECT_ROOT)).returncode
+        if choice == "3":
+            path = read_choice("回放目录> ")
+            if not path:
+                continue
+            return subprocess.run([sys.executable, str(script), "--dir", path.strip('"')],
+                                  cwd=str(PROJECT_ROOT)).returncode
+        print("  无效选项")
+
+
 # =====================================================================
 # 主菜单
 # =====================================================================
@@ -270,6 +309,7 @@ TOOLS = [
     ("2", "动画数据库生成器", "解析 anm2 → npc_animdb.lua", tool_animdb),
     ("3", "冒烟测试", "运行全部单元/集成测试", tool_test),
     ("4", "部署", "镜像同步到 Isaac mods 目录", tool_deploy),
+    ("5", "玩后一键报告", "备份回放 + 跳蛛/动画核对 + 回放诊断", tool_postplay),
 ]
 
 
