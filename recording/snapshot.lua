@@ -150,6 +150,7 @@ function Snapshot.finalize(snap, state, detailLevel, hazards, config)
             hz[i]={KIND_CODE[h.kind] or "p",h.variant or -1,h.pos.X-player.position.X,h.pos.Y-player.position.Y,
                 h.vel.X,h.vel.Y,h.radius or 0,h.damage or 1}
             objects[i]={id=h.id,index=h.index,seed=h.seed,kind=h.kind,sourceIndex=h.sourceIndex,
+                entityType=h.entityType,variant=h.variant,
                 x=h.pos.X,y=h.pos.Y,vx=h.vel.X,vy=h.vel.Y,r=h.radius,
                 ex=h.endPos and h.endPos.X,ey=h.endPos and h.endPos.Y,length=h.length,angle=h.angle,rotSpd=h.rotSpd,
                 appearFrame=h.appearFrame,endFrame=h.endFrame,fuseFrames=h.fuseFrames,lastFrame=h.lastFrame,
