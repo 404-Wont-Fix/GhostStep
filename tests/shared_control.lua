@@ -836,6 +836,50 @@ test('closed loop: hopping enemy is dodged when the rhythm is known',function()
     assert(hitsNew<hitsOld,'the hop model must reduce hits: '..hitsNew..' vs '..hitsOld
         ..' (closest '..closeNew..' vs '..closeOld..')')
 end)
+
+test('hop animation: pre-warning works before any movement, measured windup wins',function()
+    -- 用户思路：动画库里有攻击动画 → 精灵一播就说明要打了。
+    -- 事实（029.001_Trite.anm2 + 重新生成的 data/npc_animdb.lua）：29:1 Trite = Hop 26 帧，
+    -- 旧库里只有 BigJumpUp（"hopping" 被 --high-value-only 过滤掉了）→ 永远匹配不上。
+    local Hop=require('entities/hop_tracker')
+    local cfg=Defaults.get()
+    local h=Hop.create(cfg)
+    local player={position=Vector(0,0),velocity=Vector(0,0)}
+    local e={Index=11,InitSeed=3,Position=Vector(120,0),Velocity=Vector(0,0),Size=13}
+    local function anim(frame,name)
+        local isHop = (name==nil or name=='hop')
+        return {name=name or 'hop',frame=frame,hop=isHop,total=26,windup=11}
+    end
+    -- ① 动画刚起播、实体还没动（速度 0）→ 靠库里的前摇 11 帧立即预警
+    local hint=Hop.observe(h,e,player,100,cfg,anim(0))
+    assert(hint,'an animation that just started must produce a pre-warning')
+    assert(hint.inFrames==11,'db windup must be used first, got '..tostring(hint and hint.inFrames))
+    assert(hint.lx~=nil and hint.ly~=nil,'landing point must be predicted from the aim model')
+    -- ② 动画播到第 5 帧才开始位移 → 实测前摇 = 5
+    for i=1,4 do e.Position=Vector(120,0); e.Velocity=Vector(0,0); Hop.observe(h,e,player,100+i,cfg,anim(i)) end
+    e.Velocity=Vector(-10,0)
+    Hop.observe(h,e,player,105,cfg,anim(5))
+    for i=1,7 do e.Position=Vector(120-10*i,0); e.Velocity=Vector(-10,0); Hop.observe(h,e,player,105+i,cfg,anim(5+i)) end
+    e.Position=Vector(40,0); e.Velocity=Vector(0,0)
+    Hop.observe(h,e,player,113,cfg,{name='idle',frame=0})
+    -- ③ 下一次动画起播 → 用实测前摇 5，而不是库里的 11
+    e.Position=Vector(120,0)
+    local hint2=Hop.observe(h,e,player,200,cfg,anim(0))
+    assert(hint2,'second windup must also be predicted')
+    assert(hint2.inFrames==5,'measured windup must override the db heuristic, got '..tostring(hint2 and hint2.inFrames))
+end)
+test('planner acts on the animation pre-warning (windup, before any movement)',function()
+    local hop={id='e:12',index=12,kind='enemy',pos=Vector(140,200),vel=Vector(0,0),speed=0,
+        radius=13,damage=1,hopOn=true,hopIn=8,hopFlight=10,hopLX=200,hopLY=200,hopLen=60}
+    local st=state()
+    st.player.position=Vector(200,200); st.player.velocity=Vector(0,0)
+    local cmd=run(st,{hop},nil,300)
+    assert(st.decision.metrics.triggerKind=='hop','triggerKind='..tostring(st.decision.metrics.triggerKind))
+    assert(cmd and cmd:Length()>0.5,'a windup pre-warning must move the player')
+    assert(st.decision.metrics.nominalHit and st.decision.metrics.nominalHit>0,
+        'standing on the landing spot must be a predicted hit')
+end)
+print(string.format('SHARED CONTROL: %d passed, %d failed',checks-failures,failures))
 print(string.format('SHARED CONTROL: %d passed, %d failed',checks-failures,failures))
 print(string.format('SHARED CONTROL: %d passed, %d failed',checks-failures,failures))
 assert(failures==0,'shared control regressions failed')

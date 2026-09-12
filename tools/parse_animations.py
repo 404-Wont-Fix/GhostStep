@@ -50,7 +50,10 @@ IMPACT_CATEGORIES = {
 }
 
 # Categories included in --high-value-only mode (GhostStep threat generation uses these)
-HIGH_VALUE_CATEGORIES = {"stomping", "jumping", "laser", "ranged"}
+# "hopping" 必须算高价值：跳蛛/跳跳尸的跳跃动画就叫 Hop（029.001_Trite.anm2：
+# Hop 26 帧 / BigJumpUp 12 帧）。旧表只收 jumping，于是 29:0/29:1 在库里只有
+# "BigJumpUp"，运行时精灵播的是 "Hop" → 查不到条目 → 动画预判整条链对跳蛛失效。
+HIGH_VALUE_CATEGORIES = {"stomping", "jumping", "hopping", "laser", "ranged"}
 
 # Ignore keywords (pure visual/movement animations)
 IGNORE_KEYWORDS = [

@@ -23,6 +23,7 @@ if not okAnimDB then animDB = nil end
 -- ===== Animation lookup =====
 
 --- Safe lowercase animation name read
+--- 安全读动画名（小写）
 local function safeAnimationLower(entity)
     local okSprite, sprite = pcall(function() return entity:GetSprite() end)
     if not okSprite or sprite == nil then return "" end
@@ -55,6 +56,32 @@ local function isExcludedAnimation(anim)
         if string.find(anim, EXCLUDE_TOKENS[i], 1, true) then return true end
     end
     return false
+end
+
+-- 缺库诊断：敌人正在播一个“看起来像攻击”的动画，但动画库里没有对应条目。
+-- 这是“动画库到底有没有用、缺什么”的直接答案（log.txt 里可查）。
+-- 例：29:1 Trite 的跳跃动画叫 Hop，旧库里因为 "hopping" 被 --high-value-only
+-- 过滤掉而只剩 BigJumpUp → 永远匹配不上 → 整条链对跳蛛失效（已修）。
+local ATTACK_HINT_WORDS = { "attack", "shoot", "spit", "throw", "fire", "laser",
+    "brimstone", "beam", "charge", "cast", "summon", "stomp", "jump", "hop", "leap" }
+local _missingLogged = {}
+local _missingCount = 0
+local MISSING_LOG_MAX = 40
+local function looksLikeAttackAnim(animLower)
+    for i = 1, #ATTACK_HINT_WORDS do
+        if string.find(animLower, ATTACK_HINT_WORDS[i], 1, true) then return true end
+    end
+    return false
+end
+local function noteMissingAnim(e, animLower, frame)
+    if _missingCount >= MISSING_LOG_MAX then return end
+    local key = tostring(e.Type) .. ":" .. tostring(e.Variant or 0) .. ":" .. animLower
+    if _missingLogged[key] then return end
+    _missingLogged[key] = true
+    _missingCount = _missingCount + 1
+    Isaac.DebugString(string.format(
+        "[GhostStep3] 动画库缺条目: type=%d variant=%s anim=%s（需重跑 tools/parse_animations.py）帧=%d",
+        e.Type, tostring(e.Variant or 0), animLower, frame))
 end
 
 --- Get entity-specific jump radius from profile table
@@ -165,12 +192,22 @@ function NpcAttackSensor.collect(player, tracker, frame, config)
         if okNpc and isNpc then
             local animLower = safeAnimationLower(e)
             if animLower ~= "" and not isExcludedAnimation(animLower) then
-                local attackEntry = findAttackEntry(e.Type, e.Variant, animLower)
-                if attackEntry then
-                    local okBuild, entry = pcall(buildEntry, e, attackEntry, frame, config)
-                    if okBuild and entry then
-                        count = count + 1
-                        entries[count] = entry
+                -- 跳跃型敌人交给 entities/hop_tracker.lua 的“瞄准落点”模型：
+                -- npc_attacks 的 jumping 形状是 pos + vel*0.75*剩余前摇，而跳蛛前摇时
+                -- 速度≈ 0（它是朝玩家跳的）→ 算出来的落点就是它站着的位置，等于没用。
+                local handledByHop = config.hopPredict and config.hopTypes and config.hopTypes[e.Type]
+                if handledByHop then
+                    -- 但“精灵播着跳跃动画”这件事仍有用：hop 链自己会读（见 entities/hop_tracker）
+                else
+                    local attackEntry = findAttackEntry(e.Type, e.Variant, animLower)
+                    if not attackEntry then
+                        if looksLikeAttackAnim(animLower) then noteMissingAnim(e, animLower, frame) end
+                    else
+                        local okBuild, entry = pcall(buildEntry, e, attackEntry, frame, config)
+                        if okBuild and entry then
+                            count = count + 1
+                            entries[count] = entry
+                        end
                     end
                 end
             end
@@ -188,6 +225,12 @@ end
 
 function NpcAttackSensor.resetRoom()
     -- No state to reset (stateless sensor)
+end
+
+--- 房间切换复位（缺库诊断每房间重新记）
+function NpcAttackSensor.resetRoom()
+    _missingLogged = {}
+    _missingCount = 0
 end
 
 return NpcAttackSensor

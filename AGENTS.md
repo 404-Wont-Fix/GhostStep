@@ -129,6 +129,22 @@ direction_smooth / input_synthesizer / threat_level / spatial` **都是死代码
    `GridEntityType` = SPIKES 8 / SPIKES_ONOFF 9 / TNT 12 / **FIREPLACE 13（Rep+ 未使用，火堆是实体 33）** /
    DOOR 16 / **PILLAR 24** / ROCK_SPIKED 25。
 
+14. **动画库（`data/npc_animdb.lua`）不是“有就万事大吉”**：它由 `tools/parse_animations.py`
+    生成、唯一的老消费者是 `sensors/npc_attacks.lua`（把“type:variant + 当前动画名”映射成
+    前摇/总帧数 → 再查 `data/npc_profiles.lua` 的类别形状 → `kind=npc_attack` 威胁）。
+    实测覆盖很窄（三个会话：有 npc_attack 威胁的帧仅 **1.9%**、`forecast_match` 40 次、
+    89 次受击里只有 1 次以它为触发）。两个典型洞：
+    * **`hopping` 分类被 `--high-value-only` 过滤掉**：跳蛛/跳跳尸的跳跃动画叫 `Hop`
+      （`029.001_Trite.anm2`），旧库里 `29:1` 只有 `BigJumpUp` → 运行时精灵播 `Hop`，
+      库里查不到 → 整条链对跳蛛失效（现已把 `hopping` 加入 `HIGH_VALUE_CATEGORIES` 并重生成）。
+    * **类别没有形状也不会生成威胁**（`buildEntry` 里 `if not profile then return nil`）：
+      即使匹配上 `hopping`，`npc_profiles` 里也没这个 key → 不会造威胁。
+    另：库里 `windupFrames` 是按关键字给的**启发值**（`windup_ratio`），不是实测；
+    跳敏链现在改为实测“动画第几帧开始位移”（`hopWindup`），并在动画名带攻击关键字
+    但库里查不到时打一条“动画库缺条目”日志（`NpcAttackSensor.resetRoom()` 按房间复位）。
+    还有一类根本无解：`085.000_spider.anm2` 只有 `Idle/Walk/Appear/Death`，
+    没有 Hop 动画——普通蜘蛛的“跳”是位置突变，只能靠速度/位移信号。
+
 ## 6. 已验证的设计决策（不要"修回去"）
 
 | 决策 | 依据 |
@@ -151,7 +167,8 @@ direction_smooth / input_synthesizer / threat_level / spatial` **都是死代码
 | **脏轨迹样本不参与高阶拟合**（`Tracker.motionConsistent`） | mod 回调可能比游戏逻辑更新更快 → 同一位置进相邻两帧 → 抛物线拟合把直线弹幕掰成掉头（复现：`isParabolic=true`、规划器 `nominal_safe`；修后直线外推 + `reduce_exposure`） |
 | **贴墙接触不算穿透**（`wallContactSlack=2.0`，只作用于硬地形） | 引擎允许玩家中心贴到距实心格 9.2px，`radius=10` → 贴墙恒有 0.6px 假穿透；抹掉后贴墙不再被推开、钉子逻辑在墙边恢复工作 |
 | **冰雕像（EntityType 963 / ENTITY_FROZEN_ENEMY）不算威胁** | entities2.xml id=963 name="Frozen Enemy" `collisionDamage=0`：撞上去不扣血、玩家走进去把它踢滑（Uranus/Ice Cube 的冰雕），它只挡敌人子弹。用户 2026-09-12 反馈"冰冻住的敌人推不动、还触发避让" |
-| **跳跃型敌人（Trite=跳蛛=29:1）用"节奏 + 落点"预判，不靠直线外推** | wiki/Trite："spider variant of the Hoppers. Leaps with less frequency, but at greater distances"；用户实测跳距随玩家距离、直线朝玩家、节奏固定。闭环 A/B（`tests/shared_control.lua`）：同样 200 帧、同样 PRNG，旧的首线外推被踩 5 次，新的 0 次 |
+| **跳跃型敌人（Trite=跳蛛=29:1）用"节奏 + 动画前摇 + 瞄准落点"预判，不靠直线外推** | wiki/Trite："spider variant of the Hoppers. Leaps with less frequency, but at greater distances"；用户实测跳距随玩家距离、直线朝玩家、节奏固定。闭环 A/B（`tests/shared_control.lua`）：同样 200 帧、同样 PRNG，旧的首线外推被踩 5 次，新的 0 次 |
+| **跳蛛的落点用"瞄准玩家"模型，不用 `npc_attacks` 的 `pos+vel*0.75*前摇`** | 后者在前摇时 vel≈0（跳蛛是朝玩家跳的）→ 算出来的落点就是它自己站着的位置，等于没用。正确分工：**动画（Hop 26 帧）管"要打了 + 前摇多久"，瞄准模型管"落在哪"**；跳蛛类型因此在 `npc_attacks` 里直接跳过，不重复建模 |
 | **轨迹高阶模型（弧线/抛物线/追踪）改用"去重样本"，不再一刀切禁用** | mod 回调频率可高于逻辑帧 → 同一位置进相邻两帧。旧的 `motionConsistent` 看"最近两步"，一遇到重复样本就把弧线/抛物线/追踪全关掉（环形旋转弹幕因此退回直线外推）。改成去重后再校验"量级 + 方向"，并在剔除后仍有 ≥3 个不同位置时才做高阶拟合 |
 | **玩家/友方地面液体永不算威胁**（`PLAYER_CREEP_*` + `FLAG_FRIENDLY` 链） | 这些 variant 的生成者常为空 → 旧实现把自己的水迹当敌方避让（复现 4 条 → 2 条） |
 | **飞行免疫地面液体/地刺/TNT，但仍受火堆与尖刺岩石伤害** | wiki/Flight + wiki/TNT（TNT 只在被摧毁时爆炸）；飞行时 TNT 不再当危险 |
@@ -229,8 +246,21 @@ direction_smooth / input_synthesizer / threat_level / spatial` **都是死代码
   弧线/抛物线/追踪改用去重样本 → 不再因为一次重复采样就把高阶模型全部关掉
 - `config/defaults.lua`：`skipFrozenStatues` / `hop*` 一组参数
 - `recording/snapshot.lua`：detail4 快照记 `hopOn/hopIn/hopFlight/hopLX/hopLY/hopLen/hopPeriod/hopAimErr`
-- 测试：`tests/shared_control.lua` 新增 5 条（冰雕像 / 环形弹幕去重后仍判弧线 /
-  节拍学习 + 落点 / 侧向跳不误报 / 规划器提前躲 + 闭环 A/B），Lua 5.1+5.3 全绿（SHARED CONTROL 49 passed）
+- 测试：`tests/shared_control.lua` 新增 7 条（冰雕像 / 环形弹幕去重后仍判弧线 /
+  节拍学习 + 落点 / 侧向跳不误报 / 规划器提前躲 + 闭环 A/B / 动画前摇预警 / 规划器响应预警），
+  Lua 5.1+5.3 全绿（SHARED CONTROL 51 passed）
+
+补充（同一晚，用户追问“动画库到底有没有用”）：
+- 查清 `data/npc_animdb.lua` 的真实效果与洞（见第 5 节第 14 条）：**1.9% 帧、40 次
+  `forecast_match`、89 次受击 1 次**；跳蛛的 `Hop` 动画被 `--high-value-only` 过滤掉了。
+- 把 `hopping` 加入 `HIGH_VALUE_CATEGORIES` 并用参考资源重生成库（+76 行，纯新增）：
+  `29:1 Trite = Hop 26 帧`、`29:2/29:3/34/54/76/246/303/305/810/840/872/884` 等补齐 Hop。
+- `sensors/npc_attacks.lua`：跳蛛类型交给 hop 链（不再用 `pos+vel*0.75*前摇` 的空落点模型）；
+  新增“动画名带攻击关键字但库里无条目”的缺库日志，按房间复位。
+- `entities/hop_tracker.lua`：接入**精灵动画信号**（`config.hopAnimSignal` + `hopAnimKeywords`）——
+  动画在播但还没位移（前摇段）就能预警（不再只靠学节奏，冷启动也好了一半），
+  并用实测“动画第几帧开始位移”覆盖库里的启发前摇；`recording/snapshot.lua` 记
+  `hopAnim/hopAnimFrame/hopWindup` 供回放校准。
 
 ### 6f0a1c1 之后 — 贴墙假穿透、敌我地面液体分辨、飞行地面免疫（2026-09-11 夜）
 

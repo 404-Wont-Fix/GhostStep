@@ -77,6 +77,14 @@ function Defaults.get()
         -- “同一位置进相邻两帧”的脏采样毁掉）。
         hopPredict = true,
         hopTypes = { [29] = true, [34] = true, [54] = true, [85] = true, [215] = true },
+        -- 动画信号（用户建议路线；已接入）：精灵在播跳跃类动画时 → 提前预警。
+        -- 动画事实（029.001_Trite.anm2）：Hop 26 帧、Idle 2、Appear 26、BigJumpUp 12；
+        -- 动画库现在有 29:1 = Hop 26 帧（旧库里只有 BigJumpUp，因为 "hopping" 分类
+        -- 被 --high-value-only 过滤掉了 → 运行时永远匹配不上）。
+        -- “动画第几帧开始位移”会实测（hopWindup 记进 detail4 快照），比库里
+        -- windup_ratio=0.45 的启发值可信；实测前用启发值，两者都没有就当作立刻起跳。
+        hopAnimSignal = true,
+        hopAnimKeywords = { "hop", "jump", "leap" },
         hopAirSpeed = 3.0,          -- |实体自报速度| ≥ 它视为腾空（px/帧）
         hopMinPeriod = 8,           -- 起跳间隔下限（帧），低于视为抖动不采信
         hopMaxPeriod = 180,         -- 起跳间隔上限（帧）

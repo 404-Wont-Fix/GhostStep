@@ -217,6 +217,7 @@ local function onNewRoom()
     trackerEffects:clear()
     trackerNpcAttacks:clear()
     EnemySensor.resetRoom()
+    NpcAttackSensor.resetRoom()
     FutureMotion.clearCache() -- Tier 1: 圆弧参数缓存按房间隔离
     -- 延迟提交：先验证房间数据有效，无效下一帧重试
     local ok, room = pcall(function() return Game():GetRoom() end)

@@ -9,6 +9,11 @@ local EnemySensor = {}
 
 local HopTracker = require("entities/hop_tracker")
 
+-- 攻击动画库（tools/parse_animations.py 生成）：用来判断精灵是不是在播“跳跃类”动画，
+-- 以及拿它的总帧数/前摇帧数当滞空/预警的初始估计。库缺失时静默降级。
+local okAnimDB, animDB = pcall(require, "data/npc_animdb")
+if not okAnimDB then animDB = nil end
+
 -- 跳跃型敌人节拍跟踪（房间切换时 reset；entity.Index 会在新房间复用）
 local hop = HopTracker.create({})
 
@@ -35,13 +40,54 @@ local TYPE_FROZEN_ENEMY = 963
 -- 导致“往火堆斜上方/斜下方躲却呕上”的地方（用户 2026-09-11 反馈）。
 local FIREPLACE_HALF = 16
 
---- 安全读取动画名称（小写）
+--- 安全读取动画名（小写）
 local function safeAnimLower(entity)
     local ok, sprite = pcall(function() return entity:GetSprite() end)
     if not ok or sprite == nil then return "" end
     local ok2, anim = pcall(function() return sprite:GetAnimation() end)
     if ok2 and type(anim) == "string" then return string.lower(anim) end
     return ""
+end
+
+--- 读精灵动画（小写名 + 当前帧），失败返回 nil
+local function readSpriteAnim(entity)
+    local ok, sprite = pcall(function() return entity:GetSprite() end)
+    if not ok or sprite == nil then return nil end
+    local ok2, anim = pcall(function() return sprite:GetAnimation() end)
+    if not ok2 or type(anim) ~= "string" or anim == "" then return nil end
+    local ok3, frame = pcall(function() return sprite:GetFrame() end)
+    return string.lower(anim), (ok3 and tonumber(frame)) or 0
+end
+
+--- 动画信号：精灵在播“跳跃类”动画时返回 {name, frame, hop=true, total, windup}，否则 nil。
+--- 中文名对照（游戏 stringtable.sta）：TRITE=跳蛛、BLISTER=水疱跳蛛。
+--- 动画事实（029.001_Trite.anm2）：Hop 26 帧 / Idle 2 / Appear 26 / BigJumpUp 12。
+--- 注意：普通蜘蛛（085.000_spider.anm2）只有 Idle/Walk/Appear/Death，
+--- 没有 Hop 动画——它的“跳”是位置突变而不是动画，所以它走速度信号那条路。
+local function hopAnimInfo(entity, config)
+    if not (config.hopPredict and config.hopAnimSignal) then return nil end
+    local name, frame = readSpriteAnim(entity)
+    if not name then return nil end
+    local matched = false
+    local keywords = config.hopAnimKeywords or { "hop", "jump", "leap" }
+    for i = 1, #keywords do
+        if string.find(name, keywords[i], 1, true) then matched = true; break end
+    end
+    if not matched then return nil end
+    local total, windup
+    if animDB then
+        local list = animDB[tostring(entity.Type) .. ":" .. tostring(entity.Variant or 0)]
+        if list then
+            for i = 1, #list do
+                local it = list[i]
+                if it.name and string.lower(it.name) == name then
+                    total, windup = it.totalFrames, it.windupFrames
+                    break
+                end
+            end
+        end
+    end
+    return { name = name, frame = frame, hop = true, total = total, windup = windup }
 end
 
 --- 是否为接触威胁（活着且有敌意的 NPC 本体）
@@ -140,9 +186,9 @@ function EnemySensor.collect(player, tracker, frame, config)
                     return 1
                 end)(),
             }
-            -- 跳跃型敌人（跳蛛 Trite 等）：测节奏 → 预测下一次起跳与落点
+            -- 跳跃型敌人（跳蛛 Trite 等）：测节奏 + 读精灵动画 → 预测起跳与落点
             if config.hopPredict and config.hopTypes and config.hopTypes[e.Type] then
-                local okHop, hint = pcall(HopTracker.observe, hop, e, player, frame, config)
+                local okHop, hint = pcall(HopTracker.observe, hop, e, player, frame, config, hopAnimInfo(e, config))
                 if okHop and hint then
                     entry.hopOn = true
                     -- 取整：Lua 5.3 的 string.format("%d") 不接受浮点（会直接报错），
@@ -153,6 +199,9 @@ function EnemySensor.collect(player, tracker, frame, config)
                     entry.hopLen = hint.len
                     entry.hopPeriod = hint.period
                     entry.hopAimErr = hint.aimErr
+                    -- 动画侧诊断（回放里校准“动画第几帧开始位移”= 实测前摇）
+                    entry.hopAnim, entry.hopAnimFrame = hint.anim, hint.animFrame
+                    entry.hopWindup = hint.windup
                 end
             end
             entries[count] = entry

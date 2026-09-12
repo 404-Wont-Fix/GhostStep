@@ -67,8 +67,9 @@ function Hop.expire(self, frame, ttl)
 end
 
 --- 每帧观测一个跳跃型敌人。返回预测提示或 nil
---- 返回: { inFrames, flight, lx, ly, len, period, aimErr, leaps } 或 nil
-function Hop.observe(self, e, player, frame, cfg)
+--- anim（可选，由传感器读精灵得到）: {name=小写动画名, frame=当前帧, hop=true, total=总帧数, windup=前摇帧数}
+--- 返回: { inFrames, flight, lx, ly, len, period, aimErr, leaps, anim, animFrame, windup } 或 nil
+function Hop.observe(self, e, player, frame, cfg, anim)
     cfg = cfg or self.cfg or {}
     local pos = e.Position
     if pos == nil then return nil end
@@ -83,14 +84,28 @@ function Hop.observe(self, e, player, frame, cfg)
     local py = ppos and ppos.Y or pos.Y
     local pvel = player and player.velocity
     local speed = safeSpeed(e)
+    -- 腾空判定：实体自报速度（主）+ 精灵动画（辅）。
+    -- 速度是引擎自报的、可信；动画只用来补“已在播跳跃动画但还没开始位移”的前摇段。
+    local animHop = anim ~= nil and anim.hop == true
     local air = speed >= (cfg.hopAirSpeed or 3.0)
     local vel = e.Velocity
 
+    -- 动画播了多久（用于量“前摇到位移开始”的帧数）
+    if animHop then
+        if st.animName ~= anim.name then st.animName, st.animStart = anim.name, frame end
+    else
+        st.animName = nil
+    end
+
     if air and not st.air then
-        -- 起跳沿：记时刻/位置/起跳瞬间玩家位置（是否“显著跳跃”要等落地才能判定）
+        -- 起跳沿（靠速度）：如果动画已经在播，就量到“动画第几帧开始位移”＝实测前摇
         st.airStart = frame
         st.airX, st.airY = pos.X, pos.Y
         st.aimX, st.aimY = px, py
+        if animHop then
+            local w = frame - (st.animStart or frame)
+            if w >= 0 and w <= 60 then st.windupFrames = ewma(st.windupFrames, w, 0.5) end
+        end
     elseif (not air) and st.air then
         -- 落地沿：量滞空帧数 / 跳距 / 朝向误差
         -- 只有“显著跳跃”（净位移 ≥ hopMinLeap）才计入节拍：
@@ -119,54 +134,79 @@ function Hop.observe(self, e, player, frame, cfg)
     end
     st.air = air
 
-    -- 只在“地面 + 已知节奏 + 起跳在预警窗口内 + 落点能落在可见窗口内”时给出预测
-    if air or not st.period or not st.lastTakeoff then return nil end
-    local inFrames = st.lastTakeoff + st.period - frame
-    if inFrames < 0 or inFrames > (cfg.hopLeadFrames or 30) then return nil end
-    local flight = st.flight or (cfg.hopDefaultFlight or 12)
-    -- 落点必须能被规划器“看见”（否则模型永远不会提前躲）
-    if inFrames + flight > (cfg.hopMaxLeadTotal or 34) then return nil end
-    -- 实测朝向与玩家方向差太多（随机跳的敌人）→ 不做瞄准预测
-    local aimErr = st.aimErr or 0
-    if aimErr > (cfg.hopAimMaxDeg or 75) then return nil end
-
-    local dx, dy = px - pos.X, py - pos.Y
-    local dist = math.sqrt(dx * dx + dy * dy)
-    if dist < 0.001 then return nil end
-    -- 瞄准点 = 玩家在“起跳那一刻”的位置（用当前速度外推）。
+    -- 瞄准模型：落点 = clamp(到“玩家在起跳那一刻的位置”的距离, 30, 340)。
     -- 为什么要外推：敌人瞄的是它起跳瞬间玩家所在点；只用“现在”会漏掉“玩家继续前进
-    -- → 正好撞上落点”的情形（那正是最容易被踩到的情况）。规划器每帧重算，
-    -- 所以提前量会随 hopIn 收缩到真实位置。
-    local ax, ay = px, py
-    if pvel then
-        ax, ay = px + (pvel.X or 0) * inFrames, py + (pvel.Y or 0) * inFrames
-    end
-    -- 起跳点也要外推（敌人往往在缓慢漂移）
-    local sx, sy = pos.X + (vel and vel.X or 0) * inFrames, pos.Y + (vel and vel.Y or 0) * inFrames
-    local dx, dy = ax - sx, ay - sy
-    local dist = math.sqrt(dx * dx + dy * dy)
-    if dist < 0.001 then return nil end
-    -- 预测跳距 = clamp(到瞄准点的距离, 30, hopMaxLeap=340)。
+    -- → 正好撞上落点”的情形（那正是最容易被踩到的情况）。
     -- 为什么不再用“观测到的最大跳距”当上限：跳距随玩家距离变化（用户实测），
     -- 观测值只能说明“目前为止看到的那几次”，不是敌人的上限。卡太死会把落点画短，
     -- 于是站在真正落点上也判成安全（闭环复现：观测 50px → 上限 100px，
     -- 而实际跳了 123px → 规划器放手不动 → 被踩）。
-    -- 跳得短的敌人本来就不会被计入节拍（显著跳跃 ≥ hopMinLeap 才算），
-    -- 所以这里保守地“跳到玩家身上”不会给随机小跳的蜘蛛带来假威胁。
-    local maxLeap = cfg.hopMaxLeap or 340
-    local minLeap = math.min(cfg.hopMinLeap or 30, maxLeap)
-    local leap = dist
-    if leap < minLeap then leap = minLeap elseif leap > maxLeap then leap = maxLeap end
-    local inv = leap / dist
+    local function aimLanding(inFrames)
+        if inFrames < 0 then inFrames = 0 end
+        local ax, ay = px, py
+        if pvel then
+            ax, ay = px + (pvel.X or 0) * inFrames, py + (pvel.Y or 0) * inFrames
+        end
+        local sx, sy = pos.X + (vel and vel.X or 0) * inFrames, pos.Y + (vel and vel.Y or 0) * inFrames
+        local ddx, ddy = ax - sx, ay - sy
+        local d = math.sqrt(ddx * ddx + ddy * ddy)
+        if d < 0.001 then return nil end
+        local maxLeap = cfg.hopMaxLeap or 340
+        local minLeap = math.min(cfg.hopMinLeap or 30, maxLeap)
+        local leap = d
+        if leap < minLeap then leap = minLeap elseif leap > maxLeap then leap = maxLeap end
+        local inv = leap / d
+        return sx + ddx * inv, sy + ddy * inv,
+            math.sqrt((sx - pos.X) ^ 2 + (sy - pos.Y) ^ 2) + leap
+    end
+
+    -- 实测朝向与玩家方向差太多（随机跳的敌人）→ 不做瞄准预测
+    local aimErr = st.aimErr or 0
+    if aimErr > (cfg.hopAimMaxDeg or 75) then return nil end
+    local flight = st.flight or (cfg.hopDefaultFlight or 12)
+
+    -- ① 动画信号：跳跃动画已在播、但还没开始位移（前摇段）→ 提前预警。
+    --    这是动画库真正有用的地方：旧的 npc_attacks 链只会拿“剩余前摇 × 当前速度”
+    --    猜落点，而跳蛛前摇时速度≈ 0 → 猜出来的落点就是它自己站着的位置（等于没用）。
+    --    windup 优先用实测（“动画第几帧开始位移”，Hop 开始时量到），
+    --    没有实测值时用动画库的启发值（windup_ratio=0.45），再没有就当作立刻起跳。
+    if animHop and not air then
+        local windup = st.windupFrames or (anim and anim.windup) or 0
+        local remain = math.max(0, windup - ((anim and anim.frame) or 0))
+        -- 滞空估计：实测优先；否则用“动画总帧数 - 前摇帧数”（Hop 26 - 11 = 15）；
+        -- 不能用总帧数（会把前摇重复算一遍 → remain+flight > 34 直接自我否决）。
+        local animFlight = (anim and anim.total and anim.windup)
+            and math.max(1, anim.total - anim.windup) or nil
+        local fl = st.flight or animFlight or cfg.hopDefaultFlight or 12
+        if remain + fl <= (cfg.hopMaxLeadTotal or 34) then
+            local lx, ly, len = aimLanding(remain)
+            if lx then
+                return { inFrames = remain, flight = fl, lx = lx, ly = ly, len = len,
+                    period = st.period, aimErr = aimErr, leaps = st.leaps or 0,
+                    anim = anim.name, animFrame = anim.frame, windup = st.windupFrames }
+            end
+        end
+    end
+
+    -- ② 节奏信号：地面 + 已知节拍 + 起跳在预警窗口内 + 落点能落在可见窗口内
+    if air or not st.period or not st.lastTakeoff then return nil end
+    local inFrames = st.lastTakeoff + st.period - frame
+    if inFrames < 0 or inFrames > (cfg.hopLeadFrames or 30) then return nil end
+    if inFrames + flight > (cfg.hopMaxLeadTotal or 34) then return nil end
+    local lx, ly, len = aimLanding(inFrames)
+    if not lx then return nil end
     return {
         inFrames = inFrames,
         flight = flight,
-        lx = sx + dx * inv,
-        ly = sy + dy * inv,
-        len = math.sqrt((sx - pos.X) ^ 2 + (sy - pos.Y) ^ 2) + leap,
+        lx = lx,
+        ly = ly,
+        len = len,
         period = st.period,
         aimErr = aimErr,
         leaps = st.leaps or 0,
+        anim = animHop and anim.name or nil,
+        animFrame = animHop and anim.frame or nil,
+        windup = st.windupFrames,
     }
 end
 
