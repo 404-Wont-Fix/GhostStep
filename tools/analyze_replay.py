@@ -48,6 +48,7 @@ def analyze(path):
     amplitudes = collections.Counter()
     dodge_dir8 = collections.Counter()  # 8方向闪避直方图
     damages, contexts, io_events, episodes, segments, warnings = {}, {}, [], [], [], []
+    anim_missing, hop_measured = [], []
     previous = segment = header = None
     last_seq = None
     session_index = 0
@@ -94,6 +95,19 @@ def analyze(path):
             io_events.append(row)
         elif ev == 'avoidance_end':
             episodes.append(row)
+        elif ev == 'anim_missing':
+            # 精灵在播“看起来像攻击”的动画、但 data/npc_animdb.lua 里没条目 → 动画预判的缺口
+            if len(anim_missing) < 4000:
+                anim_missing.append(dict(frame=row.get('frame'), entityType=row.get('entityType'),
+                                        variant=row.get('variant'), animation=row.get('animation')))
+        elif ev == 'hop_measured':
+            # 跳跃型敌人（跳蛛 Trite 等）一次显著跳跃的实测值：前摇/滞空/跳距/节拍/朝向误差
+            if len(hop_measured) < 4000:
+                hop_measured.append(dict(frame=row.get('frame'), entityType=row.get('entityType'),
+                                         variant=row.get('variant'), leap=row.get('leap'),
+                                         flight=row.get('flight'), period=row.get('period'),
+                                         windup=row.get('windup'), aimErr=row.get('aimErr'),
+                                         anim=row.get('anim')))
         elif ev == 'damage_attempt':
             damages[(session_index,row.get('attemptId', f'line-{number}'))] = dict(row,sessionIndex=session_index)
         elif ev == 'damage_context':
@@ -170,6 +184,7 @@ def analyze(path):
                 firstSnapshotFrame=first_frame,lastSnapshotFrame=last_frame,amplitudes=amplitudes,
                 dodgeDir8={DIR8_NAMES[k]: v for k, v in sorted(dodge_dir8.items())},
                 stages={k:summary(v) for k,v in stages.items()},ioPauseEvents=io_events,
+                animMissing=anim_missing,hopMeasured=hop_measured,
                 damage=list(damages.values()),recordedEpisodes=episodes,observedSegments=segments,warnings=warnings,
                 limitations=['实际位移含玩家惯性、外力、地形影响，不代表 mod 的因果贡献。',
                              '缺帧处分段；保留样本比例不是整局成功率。',
@@ -201,6 +216,18 @@ def write_reports(reports, output):
             for d in r['damage']:
                 c=d.get('context',{});m=c.get('metrics',{})
                 writer.writerow(dict(d,file=r['file'],wallDistance=c.get('wallDistance'),evaluated=m.get('evaluated'),selectedRisk=m.get('selectedRisk')))
+    with (output/'anim_gaps.csv').open('w',encoding='utf-8-sig',newline='') as f:
+        fields=['file','frame','entityType','variant','animation']
+        writer=csv.DictWriter(f,fieldnames=fields,extrasaction='ignore');writer.writeheader()
+        for report in reports:
+            for m in report.get('animMissing') or []:
+                writer.writerow(dict(m,file=report['file']))
+    with (output/'hop_measured.csv').open('w',encoding='utf-8-sig',newline='') as f:
+        fields=['file','frame','entityType','variant','leap','flight','period','windup','aimErr','anim']
+        writer=csv.DictWriter(f,fieldnames=fields,extrasaction='ignore');writer.writeheader()
+        for report in reports:
+            for h in report.get('hopMeasured') or []:
+                writer.writerow(dict(h,file=report['file']))
     # 第二遍流式导出逐决策数据，不把所有帧驻留内存。
     with (output/'decisions.csv').open('w',encoding='utf-8-sig',newline='') as f:
         fields=['file','frame','decisionId','episodeId','reason','active','rawX','rawY','commandX','commandY',
@@ -256,6 +283,33 @@ def write_reports(reports, output):
         lines += ['',f"慢写暂停事件：{[e.get('writeMs') for e in r['ioPauseEvents']]} ms。事件可能位于被淘汰的快照区间，不能仅看保留快照最大值。",'', '| 阶段 | 样本数 | P95 ms | 最大 ms |','|---|---:|---:|---:|']
         for k,v in r['stages'].items():
             lines.append(f"| {k} | {v['samples']} | {v.get('p95')} | {v.get('maximum')} |")
+        # 动画预判覆盖：缺条目清单 + 跳跃型敌人实测量（本轮新增，用于指出动画库还缺什么）
+        missing=r.get('animMissing') or []
+        hops=r.get('hopMeasured') or []
+        if missing or hops:
+            lines += ['','### 动画/跳跃预判实测', '']
+        if missing:
+            tally=collections.Counter((m.get('entityType'),m.get('variant'),m.get('animation')) for m in missing)
+            lines += [f'动画库缺条目（精灵在播攻击类动画但 `data/npc_animdb.lua` 里没对应条目）：{len(missing)} 次 / {len(tally)} 种',
+                      '','| type | variant | 动画 | 次数 |','|---|---:|---|---:|']
+            for (t,v,a),cnt in tally.most_common(30):
+                lines.append(f'| {t} | {v} | {a} | {cnt} |')
+            lines += ['', '→ 修法：把该动画纳入 `tools/parse_animations.py` 的关键字/高价值分类后重跑生成动画库。','']
+        if hops:
+            def med(vals):
+                vals=sorted(v for v in vals if isinstance(v,(int,float)))
+                return vals[len(vals)//2] if vals else None
+            perType=collections.defaultdict(list)
+            for h in hops:
+                perType[(h.get('entityType'),h.get('variant'))].append(h)
+            lines += [f'跳跃型敌人实测（跳蛛 Trite 等，共 {len(hops)} 次显著跳跃）',
+                      '','| type | variant | 次数 | 滞空(帧) | 跳距(px) | 起跳间隔(帧) | 实测前摇(帧) | 朝向误差(°) |','|---|---:|---:|---:|---:|---:|---:|---:|']
+            for (t,v),hs in sorted(perType.items(), key=lambda kv:-len(kv[1])):
+                lines.append('| %s | %s | %d | %s | %s | %s | %s | %s |' % (
+                    t, v, len(hs), med([x.get('flight') for x in hs]), med([x.get('leap') for x in hs]),
+                    med([x.get('period') for x in hs]), med([x.get('windup') for x in hs]),
+                    med([x.get('aimErr') for x in hs])))
+            lines += ['', '→ 库里的前摇是关键字启发值（Hop 26 帧 × 45% = 11 帧）；实测前摇接近 0 就说明该动画没有前摇，动画信号只能提前 1~2 帧，主力靠节拍模型。','']
         lines += ['',*r['warnings'],'',*r['limitations'],'']
     (output/'report.md').write_text('\n'.join(lines),encoding='utf-8')
 

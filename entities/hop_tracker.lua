@@ -56,6 +56,14 @@ end
 function Hop.reset(self)
     self.states = {}
     self.observed = 0
+    self.events = {}
+end
+
+--- 取出并清空诊断事件（实测前摇/节拍/跳距/朝向误差）
+function Hop.takeEvents(self)
+    local evs = self.events or {}
+    self.events = {}
+    return evs
 end
 
 --- 未再见到的状态清理（敌人死亡/离房后残留）
@@ -102,6 +110,7 @@ function Hop.observe(self, e, player, frame, cfg, anim)
         st.airStart = frame
         st.airX, st.airY = pos.X, pos.Y
         st.aimX, st.aimY = px, py
+        st.airAnim = animHop and anim.name or nil   -- 落地时精灵已切回 Idle，事件要的是起跳时的动画
         if animHop then
             local w = frame - (st.animStart or frame)
             if w >= 0 and w <= 60 then st.windupFrames = ewma(st.windupFrames, w, 0.5) end
@@ -129,8 +138,19 @@ function Hop.observe(self, e, player, frame, cfg, anim)
             if err then st.aimErr = ewma(st.aimErr, err, 0.3) end
             st.leaps = (st.leaps or 0) + 1
             self.observed = (self.observed or 0) + 1
+            -- 诊断事件（main.lua 落盘）：离线直接核对“实测前摇/节拍/跳距/朝向”。
+            -- 有这行才能不靠 detail4 逐帧日志就拿到标定数据。
+            self.events = self.events or {}
+            if #self.events < 240 then
+                self.events[#self.events + 1] = {
+                    ev = "hop_measured", index = e.Index, entityType = e.Type,
+                    variant = e.Variant, frame = frame, leap = len, flight = flight,
+                    period = st.period, windup = st.windupFrames, aimErr = st.aimErr,
+                    anim = st.airAnim,
+                }
+            end
         end
-        st.airX, st.airY, st.aimX, st.aimY, st.airStart = nil, nil, nil, nil, nil
+        st.airX, st.airY, st.aimX, st.aimY, st.airStart, st.airAnim = nil, nil, nil, nil, nil, nil
     end
     st.air = air
 

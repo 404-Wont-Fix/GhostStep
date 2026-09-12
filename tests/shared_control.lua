@@ -868,6 +868,79 @@ test('hop animation: pre-warning works before any movement, measured windup wins
     assert(hint2,'second windup must also be predicted')
     assert(hint2.inFrames==5,'measured windup must override the db heuristic, got '..tostring(hint2 and hint2.inFrames))
 end)
+test('enemy sensor exports hop measurements and reads the sprite animation',function()
+    -- 离线标定入口：实测前摇/节拍/跳距/滞空必须能被 main.lua 写进回放。
+    -- 精灵动画：待机时播 Idle、起跳前 3 帧开始播 Hop → 实测前摇应为 3。
+    local EnemySensor=require('sensors/enemies')
+    local cfg=Defaults.get()
+    local player={position=Vector(0,0),velocity=Vector(0,0)}
+    local animName,animFrame='Idle',0
+    local npc={Type=29,Variant=1,Index=31,InitSeed=9,Position=Vector(200,0),Velocity=Vector(0,0),
+        Size=13,CollisionDamage=1,ToNPC=function() return {} end,IsDead=function() return false end,
+        IsActiveEnemy=function() return true end,HasEntityFlags=function() return false end,
+        GetSprite=function() return {
+            GetAnimation=function() return animName end,
+            GetFrame=function() return animFrame end } end}
+    SMOKE.entities={npc}
+    EnemySensor.resetRoom()
+    local trk=Tracker.create()
+    local frame=0
+    local function step() EnemySensor.collect(player,trk,frame,cfg); frame=frame+1 end
+    local function idle(n)
+        animName='Idle'
+        for _=1,n do npc.Velocity=Vector(0,0); step() end
+    end
+    local function windup(n)
+        animName='Hop'
+        for i=1,n do animFrame=i-1; npc.Velocity=Vector(0,0); step() end
+    end
+    local function leap(n,stepPx)
+        animName='Hop'; animFrame=3
+        for i=1,n do npc.Position=Vector(npc.Position.X+stepPx,0); npc.Velocity=Vector(stepPx,0); step() end
+    end
+    idle(27); windup(3); leap(10,-12)   -- 第一次跳跃：前摇 3、滞空 10、跳距 120
+    idle(27); windup(3); leap(10,-8)    -- 第二次：跳距 80 → 起跳间隔 40
+    idle(3)                             -- 落地沿需要“速度回落”的那一帧
+    local evs=EnemySensor.takeEvents()
+    assert(#evs==2,'two significant leaps must be exported, got '..#evs)
+    assert(evs[1].ev=='hop_measured' and evs[1].entityType==29 and evs[1].variant==1)
+    -- 起跳点按“速度首次超阈”的那一帧记，所以跳距会少算一帧位移（~8~12px）
+    assert(evs[1].leap>95 and evs[1].leap<125,'leap length must be measured, got '..tostring(evs[1].leap))
+    assert(math.abs(evs[2].period-40)<1,'takeoff interval must be measured, got '..tostring(evs[2].period))
+    assert(math.abs(evs[2].windup-3)<0.6,'measured windup must come from the sprite, got '..tostring(evs[2].windup))
+    assert(evs[2].anim=='hop','animation name must be recorded, got '..tostring(evs[2].anim))
+    SMOKE.entities={}
+    EnemySensor.resetRoom()
+end)
+test('npc attack sensor reports missing animations and yields hop types to the hop chain',function()
+    local Sensor=require('sensors/npc_attacks')
+    local cfg=Defaults.get()
+    local function npc(o)
+        local e={Type=9999,Variant=0,Index=41,InitSeed=2,Position=Vector(60,0),Velocity=Vector(0,0),Size=13,
+            ToNPC=function() return {} end,IsDead=function() return false end,
+            IsActiveEnemy=function() return true end,HasEntityFlags=function() return false end,
+            GetSprite=function() return {GetAnimation=function() return 'Shoot2' end,
+                                       GetFrame=function() return 2 end} end}
+        for k,v in pairs(o or {}) do e[k]=v end
+        return e
+    end
+    SMOKE.entities={npc()}
+    Sensor.resetRoom()
+    local trk=Tracker.create()
+    Sensor.collect({position=Vector(0,0)},trk,10,cfg)
+    local evs=Sensor.takeEvents()
+    assert(#evs==1 and evs[1].ev=='anim_missing','a missing attack animation must be reported')
+    assert(evs[1].animation=='shoot2' and evs[1].entityType==9999)
+    -- 跳蛛类型交给 hop 链：npc_attacks 不再用 pos+vel*0.75*前摇 的空落点模型
+    SMOKE.entities={npc({Type=29,Variant=1,Index=42})}
+    Sensor.resetRoom()
+    local trk2=Tracker.create()
+    Sensor.collect({position=Vector(0,0)},trk2,20,cfg)
+    assert(trk2.count==0,'hop types must not be modelled by npc_attacks, count='..trk2.count)
+    assert(#Sensor.takeEvents()==0,'hop types must not be reported as missing either')
+    SMOKE.entities={}
+    Sensor.resetRoom()
+end)
 test('planner acts on the animation pre-warning (windup, before any movement)',function()
     local hop={id='e:12',index=12,kind='enemy',pos=Vector(140,200),vel=Vector(0,0),speed=0,
         radius=13,damage=1,hopOn=true,hopIn=8,hopFlight=10,hopLX=200,hopLY=200,hopLen=60}

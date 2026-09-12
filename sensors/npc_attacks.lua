@@ -66,6 +66,7 @@ local ATTACK_HINT_WORDS = { "attack", "shoot", "spit", "throw", "fire", "laser",
     "brimstone", "beam", "charge", "cast", "summon", "stomp", "jump", "hop", "leap" }
 local _missingLogged = {}
 local _missingCount = 0
+local _missingEvents = {}
 local MISSING_LOG_MAX = 40
 local function looksLikeAttackAnim(animLower)
     for i = 1, #ATTACK_HINT_WORDS do
@@ -79,6 +80,8 @@ local function noteMissingAnim(e, animLower, frame)
     if _missingLogged[key] then return end
     _missingLogged[key] = true
     _missingCount = _missingCount + 1
+    _missingEvents[#_missingEvents + 1] = { ev = "anim_missing", frame = frame,
+        entityType = e.Type, variant = e.Variant, animation = animLower }
     Isaac.DebugString(string.format(
         "[GhostStep3] 动画库缺条目: type=%d variant=%s anim=%s（需重跑 tools/parse_animations.py）帧=%d",
         e.Type, tostring(e.Variant or 0), animLower, frame))
@@ -231,6 +234,13 @@ end
 function NpcAttackSensor.resetRoom()
     _missingLogged = {}
     _missingCount = 0
+end
+
+--- 取出并清空“动画库缺条目”事件（main.lua 写入回放，供离线列缺口清单）
+function NpcAttackSensor.takeEvents()
+    local evs = _missingEvents
+    _missingEvents = {}
+    return evs
 end
 
 return NpcAttackSensor

@@ -70,3 +70,48 @@ class ReplayTests(unittest.TestCase):
             active_rows=[r for r in rows_csv if r['active']=='True']
             self.assertEqual(active_rows[0]['dodgeDir8'],'右')
             self.assertEqual(active_rows[3]['dodgeDir8'],'左上')
+
+
+class AnimCoverageTests(unittest.TestCase):
+    """本轮新增：动画库缺口 + 跳跃实测事件必须能进报告（离线一键出清单）。"""
+
+    def _report(self, tmp):
+        p=Path(tmp)/'anim.jsonl'
+        rows=[{'ev':'session_start','seq':1,'seed':'a'},
+              {'ev':'anim_missing','seq':2,'frame':10,'entityType':29,'variant':1,'animation':'hop'},
+              {'ev':'anim_missing','seq':3,'frame':40,'entityType':29,'variant':1,'animation':'hop'},
+              {'ev':'anim_missing','seq':4,'frame':41,'entityType':864,'variant':0,'animation':'shoot2'},
+              {'ev':'hop_measured','seq':5,'frame':50,'entityType':29,'variant':1,'leap':120.0,
+               'flight':10.0,'period':40.0,'windup':3.0,'aimErr':12.0,'anim':'hop'},
+              {'ev':'hop_measured','seq':6,'frame':130,'entityType':29,'variant':1,'leap':80.0,
+               'flight':12.0,'period':41.0,'windup':5.0,'aimErr':18.0,'anim':'hop'}]
+        p.write_text('\n'.join(json.dumps(r) for r in rows)+'\n',encoding='utf-8')
+        return m.analyze(p)
+
+    def test_missing_animations_and_hop_measurements_are_collected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            r=self._report(tmp)
+            self.assertEqual(len(r['animMissing']),3)
+            self.assertEqual(r['animMissing'][0]['animation'],'hop')
+            self.assertEqual(len(r['hopMeasured']),2)
+            self.assertEqual(r['hopMeasured'][0]['windup'],3.0)
+            self.assertEqual(r['hopMeasured'][1]['period'],41.0)
+            # 事件计数要出现在 events 直方图里（报告里能一眼看到有没有数据）
+            self.assertEqual(r['events']['anim_missing'],3)
+            self.assertEqual(r['events']['hop_measured'],2)
+
+    def test_report_and_csv_expose_the_gap_list(self):
+        import csv as _csv
+        with tempfile.TemporaryDirectory() as tmp:
+            r=self._report(tmp)
+            out=Path(tmp)/'out'
+            m.write_reports([r],out)
+            md=(out/'report.md').read_text(encoding='utf-8')
+            self.assertIn('动画/跳跃预判实测',md)
+            self.assertIn('动画库缺条目',md)
+            self.assertIn('跳跃型敌人实测',md)
+            gaps=list(_csv.DictReader((out/'anim_gaps.csv').open(encoding='utf-8-sig')))
+            hops=list(_csv.DictReader((out/'hop_measured.csv').open(encoding='utf-8-sig')))
+            self.assertEqual(len(gaps),3)
+            self.assertEqual(len(hops),2)
+            self.assertEqual(hops[0]['entityType'],'29')

@@ -217,6 +217,8 @@ direction_smooth / input_synthesizer / threat_level / spatial` **都是死代码
 | **`avoidance_start` 里 effect 占比** | 若仍有玩家/友方水迹（看着是自己踩出来的液体）→ 查 `PLAYER_CREEP_*` 与 `FLAG_FRIENDLY` 链 |
 | **`metrics.triggerKind` 出现 `hop`** | 说明跳蛛预判在生效；`detail=4` 快照里 `hopOn/hopIn/hopFlight/hopLX/hopLY` 可直接核对节奏与落点 |
 | **敌人采集日志里不再出现 963** | 冰雕像（Frozen Enemy）应完全不被采集；若仍在，查 `skipFrozenStatues` |
+| **`anim_gaps.csv` / 报告“动画库缺条目”** | 精灵在播攻击类动画但动画库里没条目 → 这就是动画预判覆盖不到的敌人；按 type/variant/动画 排序补 `tools/parse_animations.py` 的关键字或高价值分类 |
+| **`hop_measured.csv` / 报告“跳跃型敌人实测”** | 跳蛛等的实测前摇/滞空/跳距/间隔/朝向误差。判断标准：**实测前摇 ≈ 库里的启发值**说明动画信号可用；**≈0** 说明该动画没有前摇（动画只能提前 1~2 帧，主力靠节拍模型）；朝向误差 >75° 会被自动放弃瞄准预测 |
 
 ## 9. 修复历史（近期，含根因与证据）
 

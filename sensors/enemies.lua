@@ -246,4 +246,10 @@ function EnemySensor.resetRoom()
     pcall(HopTracker.reset, hop)
 end
 
+--- 取出跳跃型敌人的实测诊断事件（main.lua 写入回放：实测前摇/节拍/跳距/朝向）
+function EnemySensor.takeEvents()
+    local ok, evs = pcall(HopTracker.takeEvents, hop)
+    return (ok and evs) or {}
+end
+
 return EnemySensor

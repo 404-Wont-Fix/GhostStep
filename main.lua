@@ -336,8 +336,15 @@ local function onPlayerUpdate(player)
     local combat=isCombat(); state.inCombat=combat
     if combat~=wasCombat then wasCombat=combat; registry:onCombatChanged() end
     local hz=getHazards(frame)
+    -- 传感器侧的诊断事件（每帧排空，不积累）：
+    --   hop_measured — 跳跃型敌人一次显著跳跃的实测值（前摇/节拍/跳距/朝向），离线标定用
+    --   anim_missing — 精灵在播“看起来像攻击”的动画但动画库里没有 → 缺口清单
+    local sensorEvents={}
+    for _,ev in ipairs(EnemySensor.takeEvents()) do sensorEvents[#sensorEvents+1]=ev end
+    for _,ev in ipairs(NpcAttackSensor.takeEvents()) do sensorEvents[#sensorEvents+1]=ev end
     if Config.recordingEnabled then
         for _,event in ipairs(state.forecastMatches or {}) do sessionRecorder:event(event) end
+        for _,event in ipairs(sensorEvents) do sessionRecorder:event(event) end
     end
     hazardQuery:update(hz,frame)
     local active=state.player.valid and state.player.controlsEnabled~=false and Runtime.isDodgeActive(state) and okInput
