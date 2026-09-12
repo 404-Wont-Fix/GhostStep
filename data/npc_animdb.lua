@@ -41,28 +41,6 @@ return {
   ["15:3"] = {
     {name="Hop", totalFrames=11, windupFrames=4, category="hopping"},
   },
-  ["17:1"] = {
-    {name="Shopkeeper 1", totalFrames=2, windupFrames=1, category="hopping"},
-    {name="Shopkeeper 2", totalFrames=4, windupFrames=1, category="hopping"},
-    {name="Shopkeeper 3", totalFrames=2, windupFrames=1, category="hopping"},
-    {name="Shopkeeper 4", totalFrames=4, windupFrames=1, category="hopping"},
-    {name="Shopkeeper 5", totalFrames=4, windupFrames=1, category="hopping"},
-    {name="Shopkeeper 6", totalFrames=2, windupFrames=1, category="hopping"},
-    {name="Shopkeeper 7", totalFrames=2, windupFrames=1, category="hopping"},
-    {name="Shopkeeper 8", totalFrames=2, windupFrames=1, category="hopping"},
-    {name="Shopkeeper 9", totalFrames=2, windupFrames=1, category="hopping"},
-  },
-  ["17:4"] = {
-    {name="Shopkeeper 1", totalFrames=2, windupFrames=1, category="hopping"},
-    {name="Shopkeeper 2", totalFrames=4, windupFrames=1, category="hopping"},
-    {name="Shopkeeper 3", totalFrames=2, windupFrames=1, category="hopping"},
-    {name="Shopkeeper 4", totalFrames=4, windupFrames=1, category="hopping"},
-    {name="Shopkeeper 5", totalFrames=4, windupFrames=1, category="hopping"},
-    {name="Shopkeeper 6", totalFrames=2, windupFrames=1, category="hopping"},
-    {name="Shopkeeper 7", totalFrames=2, windupFrames=1, category="hopping"},
-    {name="Shopkeeper 8", totalFrames=2, windupFrames=1, category="hopping"},
-    {name="Shopkeeper 9", totalFrames=2, windupFrames=1, category="hopping"},
-  },
   ["202:0"] = {
     {name="ShootUp", totalFrames=29, windupFrames=11, category="ranged"},
     {name="ShootRight", totalFrames=29, windupFrames=11, category="ranged"},

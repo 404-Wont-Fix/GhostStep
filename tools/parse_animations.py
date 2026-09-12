@@ -106,6 +106,28 @@ MANUAL_ADDITIONS = {
 }
 
 
+def keyword_match(name, lower, kw):
+    """关键字必须**从词首**开始 —— 防止 "hop" 命中 "Shopkeeper" 这类假阳性。
+
+    只看起点（camelCase/数字感知，所以要看未小写的原名）：
+      * 名字开头
+      * 前一字符不是字母（含数字：Shoot1、Hop2）
+      * 前一字符小写而当前字符大写（BigJump、OldJumping、HeadShoot）
+    末尾不做限制："Shooting"、"ShootAndRotate1"、"Jump2" 这类后缀/数字都算合法。
+    "Shopkeeper" 里 "hop" 前是 "S" 且当前是小写 "h" → 不是词首 → 正确拒绝。
+    """
+    start = 0
+    while True:
+        i = lower.find(kw, start)
+        if i < 0:
+            return False
+        if (i == 0 or not name[i - 1].isalpha()
+                or (name[i - 1].islower() and name[i].isupper())
+                or name[i].isdigit()):
+            return True
+        start = i + 1
+
+
 def classify_animation(name):
     """Classify animation by name. Returns (category, windup_ratio, is_attack)."""
     lower = name.lower()
@@ -115,7 +137,7 @@ def classify_animation(name):
         if lower == kw or lower.startswith(kw + "_") or lower.endswith("_" + kw):
             return None, 0, False
     for kw in IGNORE_SUBSTRINGS:
-        if kw in lower:
+        if keyword_match(name, lower, kw):
             return None, 0, False
 
     # Detect windup vs execution phase
@@ -124,7 +146,7 @@ def classify_animation(name):
 
     # Attack category match
     for keyword, info in ATTACK_CATEGORIES.items():
-        if keyword in lower:
+        if keyword_match(name, lower, keyword):
             if is_windup_phase and not is_attack_phase:
                 return info["category"], 1.0, True
             if is_attack_phase and not is_windup_phase:
@@ -133,7 +155,7 @@ def classify_animation(name):
 
     # Impact category match
     for keyword, info in IMPACT_CATEGORIES.items():
-        if keyword in lower:
+        if keyword_match(name, lower, keyword):
             if is_windup_phase and not is_attack_phase:
                 return info["category"], 1.0, True
             if is_attack_phase and not is_windup_phase:
