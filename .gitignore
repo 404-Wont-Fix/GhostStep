@@ -18,3 +18,4 @@ Desktop.ini
 # Python 离线工具缓存
 __pycache__/
 *.pyc
+.pi/*
