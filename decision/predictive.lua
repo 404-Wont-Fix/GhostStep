@@ -34,7 +34,11 @@ function Planner.run(state,deps,frame)
     local hopSpan=0
     for i=1,#all do
         local e=all[i]
-        if e.kind=="bomb" or e.kind=="laser" or (e.radius or 0)>=32 then wide=true; break end
+        -- 扩窗只针对"危险区覆盖玩家、18 帧跑不出去"的威胁：炸弹爆圈 / 激光 / 大半径弹幕·效果·前兆。
+        -- 接触型敌人（kind==enemy，哪怕 Boss 本体 110px）不算：玩家只要跑出一个接触圆（~30px）就安全，
+        -- 而把 horizon 18→30 会让每次决策成本涨 ~70%，直接造成 Mother 战里 3 次
+        -- baseline_budget_incomplete（连基线都没算完 → 一帧都不介入）。
+        if e.kind=="bomb" or e.kind=="laser" or ((e.radius or 0)>=32 and e.kind~="enemy") then wide=true; break end
         -- 跳跃威胁（跳蛛 Trite 等）：窗口必须盖住“起跳+滞空”才能看到落点，
         -- 否则落点永远在窗口外 → 永远不会提前躲（用户 2026-09-12 反馈“躲避能力不够”）。
         if e.hopOn then

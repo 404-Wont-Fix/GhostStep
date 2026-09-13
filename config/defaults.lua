@@ -24,6 +24,40 @@ function Defaults.get()
         hazardContact = true,       -- 敌人接触伤害
         hazardLasers = true,        -- 激光（Phase 3 实装，先占位）
         hazardBombs = true,         -- 炸弹（Phase 3 实装，先占位）
+        -- 炸弹引信：EntityBomb 只有写接口 SetExplosionCountdown，没有只读引信；
+        -- 回放里 ExplosionCountdown 恒为 nil（408/408）→ 旧实现退回窗口 (0, math.huge)，
+        -- 也就是把爆圈当成"立刻生效且永久有效"的实心禁区：炸弹一出现，所有候选都判"在爆圈里"，
+        -- 搜索完不成 / 没有更优解 → 输出在"不动"和"180° 反向猛推"之间抽抽（用户反馈"左脑跟右脑打架"）。
+        -- 现在按变体给默认引信，用"第一次看到这颗炸弹的帧"倒计时（sensors/bombs.lua），
+        -- 爆圈只在预估爆炸帧前后生效 → 玩家可以先站开、到点再走。
+        bombFuseFrames = 90,        -- 普通炸弹引信（帧，≈3s）
+        bombTrollFuseFrames = 45,   -- 巨魔/追踪炸弹 1.5~2.5s（wiki），取最短值保守估计
+        bombFuseSafetyLead = 6,     -- 预估爆炸帧提前量：把"可能比预估更早炸"算进危险窗口
+        bombFuseStaleLead = 6,      -- 预估已过期但炸弹还在 → 按这么多帧内必炸处置（重新武装）
+        -- 追着玩家跑的炸弹（troll/fire/homing）不能“等到快爆炸再跑”：
+        -- 回放 session_20260911_000240 的 bomb:655 以 10px/帧 扑向玩家，玩家只有 3~4px/帧。
+        -- 判定：自报速度 ≥ bombChaseMinSpeed 且方向基本对着玩家（cos ≥ bombChaseCos）
+        --   → 危险窗口从“现在”开始（持续拉开距离），而不是只盖爆炸帧。
+        -- 追踪炸弹（追着你跑、然后自爆的那一类，即巨魔炸弹家族）单独开关：
+        --   开 = 判定“它在追我”就从现在开始躲（不再等快爆炸才跑，见 bombChase* 说明）；
+        --   关 = **完全不处理**：不采集、不躲，也不会退化成“普通炸弹”再套一遍机制
+        --        （用户 2026-09-13 明确要求“关掉就是不处理，别把普通炸弹的躲避机制套上去”）。
+        --        普通炸弹 / 玩家自己扔的炸弹不受影响。
+        -- MCM: 危险源 → “躲避追踪炸弹（追着你跑的炸弹）”。关掉后回放里这些炸弹压根不出现。
+        dodgeChasingBombs = true,
+        bombChaseMinSpeed = 0.5,    -- px/帧：低于此视为“停在原地等着炸”
+        bombChaseCos = 0.5,         -- 速度方向与“炸弹→玩家”的夹角余弦下限
+        bombTrollAlertRadius = 40,  -- 巨魔炸弹家族额外警戒：离玩家 ≤ 爆圈+此值也算“现在就得躲”
+                                    -- （引信随机 + “扑一下停一下”，停下来时速度≈ 0 会漏判）
+        -- 大体积敌人播"未建模的攻击动画"时的额外危险半径（见 sensors/npc_attacks.lua）：
+        -- 回放证据（session_20260913_223945，Mother 战 17 次受击）：她的挥臂/刮地/踏地被
+        -- 采集成 anim_missing → 规划器判 nominal_safe，玩家站在离她中心 128~140px 处照样挨打
+        -- （本体 Size=110 + 玩家 10 = 120 的接触圈刚好差 8~20px）。给出攻击期的额外禁区就能提前躲开。
+        bossAttackReach = 48,           -- 攻击动画期间的额外危险半径（px）
+        bossAttackReachMinSize = 40,    -- 只对半径 ≥ 此值的敌人启用（杂兵不扩圈）
+        bossAttackReachFrames = 18,     -- 扩圈危险窗口长度（帧）。太短（如 2 帧）会让所有候选
+                                        -- 都“在圈里”，逃逸拿不到收益 → 平手 → 不介入；
+                                        -- 已建模的动画用“动画剩余帧数”，未建模的用这个值。
         hazardCreep = true,         -- 水坑/火焰（Phase 3 实装，先占位）
         hazardNpcAttacks = true,    -- NPC攻击前兆（Phase 3 实装，先占位）
         hazardSpikes = true,        -- 地刺

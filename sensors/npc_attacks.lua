@@ -63,7 +63,10 @@ end
 -- 例：29:1 Trite 的跳跃动画叫 Hop，旧库里因为 "hopping" 被 --high-value-only
 -- 过滤掉而只剩 BigJumpUp → 永远匹配不上 → 整条链对跳蛛失效（已修）。
 local ATTACK_HINT_WORDS = { "attack", "shoot", "spit", "throw", "fire", "laser",
-    "brimstone", "beam", "charge", "cast", "summon", "stomp", "jump", "hop", "leap" }
+    "brimstone", "beam", "charge", "cast", "summon", "stomp", "jump", "hop", "leap",
+    -- 近战/砸击类关键字：Mother 的 wristattack/scrapeattack/groundpound/swipe 就属于这一类，
+    -- 旧表没收录 → 既不会进 anim_missing 清单，也拿不到"大体积敌人攻击期扩圈"的兜底。
+    "smash", "slam", "punch", "swipe", "scrape", "wrist", "chomp", "pound", "kick", "slash" }
 local _missingLogged = {}
 local _missingCount = 0
 local _missingEvents = {}
@@ -92,11 +95,74 @@ local function getJumpRadius(entityType)
     return Profiles.jumpRadiusByType[entityType] or Profiles.defaultJumpRadius
 end
 
+--- 砸击落点半径（kind=slam）：按实体类型查表，缺省 defaultSlamRadius
+local function getSlamRadius(entityType)
+    return Profiles.slamRadiusByType[entityType] or Profiles.defaultSlamRadius
+end
+
+-- ===== 砸击落点锁定 =====
+-- 回放教训（Mother 战，session_20260913_223945）：
+--   落点必须在"起手那一刻"锁死。每帧重算成当前玩家位置 = 禁区跟着玩家跑 =
+--   玩家永远逃不出去（炸弹爆圈被当成永久禁区那次就是这个病）。
+-- 同一实体连续放同一套动画时，用动画帧回退（重新起播）判定"新一次砸击"。
+local _aim = {}
+
+--- 精灵动画帧（读不到就 0；用于“动画剩余帧数”窗口）
+local function spriteFrameOf(entity)
+    local ok, f = pcall(function() return entity:GetSprite():GetFrame() end)
+    return (ok and type(f) == 'number') and f or 0
+end
+
+--- 大体积敌人"未建模攻击动画"的安全网：
+--- 精灵在播攻击类动画、但动画库里查不到条目时，至少把危险半径撑大
+--- （回放证据：Mother 本体 Size=110，玩家在 128~140px 处被挥臂/刮地打到，
+---   而 110+10=120 的接触圈判"安全"）。杂兵（Size < bossAttackReachMinSize）不扩圈。
+local function buildUnknownAttackEntry(entity, frame, config, attackEntry)
+    local reach = config and config.bossAttackReach
+    if not reach or reach <= 0 then return nil end
+    local minSize = (config and config.bossAttackReachMinSize) or 40
+    local okSize, size = pcall(function() return entity.Size end)
+    size = (okSize and type(size) == 'number') and size or 0
+    if size < minSize then return nil end
+    local vel = entity.Velocity or Vector(0, 0)
+    -- 危险窗口要够长，否则“逃出去”和“站着不动”在所有候选里都算命中（窗口只有 1~2 帧时
+    -- 谁都没法在窗口内离开），风险差被抹平 → 平手 → 退化成不介入。
+    -- 已建模的动画按“动画剩余帧数”，未建模的用 bossAttackReachFrames。
+    local span
+    if attackEntry then
+        local animFrame = spriteFrameOf(entity)
+        span = math.max(1, (attackEntry.totalFrames or animFrame + 6) - animFrame)
+    else
+        span = (config and config.bossAttackReachFrames) or 18
+    end
+    return { index = entity.Index + 20000, seed = entity.InitSeed, sourceIndex = entity.Index,
+        entityType = entity.Type, variant = entity.Variant, kind = 'enemy',
+        pos = entity.Position, vel = vel, speed = vel:Length(),
+        radius = size + reach, damage = 1,
+        appearFrame = frame, endFrame = frame + span,   -- 每帧续期；动画停下就不再生效
+        predicted = true, animation = (attackEntry and attackEntry.name) or 'unknown',
+        unknownAttack = true,
+        rule = tostring(entity.Type) .. ":" .. tostring(entity.Variant or 0) .. ":guard",
+        confidence = 0.4 }
+end
+
 --- Get player position (for laser direction calculation)
 local function getPlayerPosition()
     local ok, player = pcall(Isaac.GetPlayer, 0)
     if ok and player then return player.Position end
     return nil
+end
+
+--- 砸击落点 = 起手帧的玩家位置（锁死，不跟随；见 _aim 注释）
+local function aimPoint(entity, attackEntry, animFrame, frame)
+    local key = entity.Index
+    local prev = _aim[key]
+    if prev and prev.anim == attackEntry.name and animFrame >= (prev.animFrame or 0) then
+        return prev.x, prev.y
+    end
+    local target = getPlayerPosition() or entity.Position
+    _aim[key] = { anim = attackEntry.name, animFrame = animFrame, x = target.X, y = target.Y, frame = frame }
+    return target.X, target.Y
 end
 
 --- 走廊长度：沿 dir 采样到房间外（墙）为止。
@@ -114,6 +180,16 @@ local function corridorLength(room, pos, dir, maxLen)
     return maxLen
 end
 
+--- 近战类分类：危险集中在"身体附近"，因此除了精确形状，还要给大体积敌人一个扩圈兜底。
+--- 回放依据（Mother 912:0）：她的双手在 anm2 里左右各摊到 ±206px，玩家站在离她中心
+--- 130px 处仍在手部 hitbox 范围内；瞄准型砸击只覆盖"起手时玩家站的那个点"，
+--- 玩家一旦走动就可能又落回手部范围 → 两个模型合起来才盖得上实测的 128~140px 挨打点。
+local CLOSE_QUARTERS = { slam = true, melee = true, stomping = true, jumping = true,
+    hopping = true, charge = true }
+local function isCloseQuartersCategory(cat)
+    return CLOSE_QUARTERS[cat] == true
+end
+
 --- Build tracker entry from attack detection
 --- Returns {pos, vel, speed, radius, kind, fuseFrames?, appearFrame?, ...} or nil
 local function buildEntry(entity, attackEntry, frame, config)
@@ -123,7 +199,7 @@ local function buildEntry(entity, attackEntry, frame, config)
     local okFrame,animFrame=pcall(function() return entity:GetSprite():GetFrame() end)
     animFrame=okFrame and type(animFrame)=="number" and animFrame or 0
     local remaining=math.max(0,(attackEntry.windupFrames or 0)-animFrame)
-    local radius=profile.radius or getJumpRadius(entity.Type)
+    local radius=profile.radius or (profile.radiusFrom=="slamRadius" and getSlamRadius(entity.Type)) or getJumpRadius(entity.Type)
     if cat=="ranged" and config and config.rangedCorridorRadius then
         radius=config.rangedCorridorRadius
     end
@@ -138,6 +214,12 @@ local function buildEntry(entity, attackEntry, frame, config)
     if cat=="jumping" then
         -- 落点按剩余前摇外推；着地后不继续漂移。记录模型来源供实机校准。
         entry.pos=entity.Position+entity.Velocity*(profile.velScale or 0)*remaining
+    elseif cat=="slam" then
+        -- 瞄准型砸击：落点锁在起手帧的玩家位置（见 aimPoint 的注释）
+        local ax,ay=aimPoint(entity,attackEntry,animFrame,frame)
+        entry.pos=Vector(ax,ay)
+        entry.aimLocked=true
+        entry.aimSource="player_start"
     elseif cat=="laser" or cat=="ranged" then
         local name=string.lower(attackEntry.name)
         local dir
@@ -204,12 +286,28 @@ function NpcAttackSensor.collect(player, tracker, frame, config)
                 else
                     local attackEntry = findAttackEntry(e.Type, e.Variant, animLower)
                     if not attackEntry then
-                        if looksLikeAttackAnim(animLower) then noteMissingAnim(e, animLower, frame) end
+                        if looksLikeAttackAnim(animLower) then
+                            noteMissingAnim(e, animLower, frame)
+                            -- 缺条目也要有兜底：大体积敌人播攻击类动画时先把危险半径撑大
+                            local okRaw, raw = pcall(buildUnknownAttackEntry, e, frame, config)
+                            if okRaw and raw then
+                                count = count + 1
+                                entries[count] = raw
+                            end
+                        end
                     else
                         local okBuild, entry = pcall(buildEntry, e, attackEntry, frame, config)
                         if okBuild and entry then
                             count = count + 1
                             entries[count] = entry
+                            -- 近战/砸击类即使有精确模型，再给一份"攻击期扩圈"（见 CLOSE_QUARTERS）
+                            if isCloseQuartersCategory(attackEntry.category) then
+                                local okRaw, raw = pcall(buildUnknownAttackEntry, e, frame, config, attackEntry)
+                                if okRaw and raw then
+                                    count = count + 1
+                                    entries[count] = raw
+                                end
+                            end
                         end
                     end
                 end
@@ -227,13 +325,10 @@ function NpcAttackSensor.collect(player, tracker, frame, config)
 end
 
 function NpcAttackSensor.resetRoom()
-    -- No state to reset (stateless sensor)
-end
-
---- 房间切换复位（缺库诊断每房间重新记）
-function NpcAttackSensor.resetRoom()
+    -- 房间切换复位（缺库诊断每房间重新记）；砸击落点锁定也不能跨房间用
     _missingLogged = {}
     _missingCount = 0
+    _aim = {}
 end
 
 --- 取出并清空“动画库缺条目”事件（main.lua 写入回放，供离线列缺口清单）

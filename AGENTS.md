@@ -147,6 +147,55 @@ direction_smooth / input_synthesizer / threat_level / spatial` **都是死代码
     还有一类根本无解：`085.000_spider.anm2` 只有 `Idle/Walk/Appear/Death`，
     没有 Hop 动画——普通蜘蛛的“跳”是位置突变，只能靠速度/位移信号。
 
+15. **`EntityBomb` 没有“可读引信”这个接口**：IsaacDocs/rep/EntityBomb 的变量只有
+    `ExplosionDamage / Flags / IsFetus / RadiusMultiplier`，函数只有
+    `SetExplosionCountdown`（写）——读 `ExplosionCountdown` 恒为 nil（回放 408/408）。
+    所以**绝不能**让“引信未知”退化成窗口 `(0, math.huge)`：那等于把 90px 爆圈当成
+    “立刻且永久”的实心禁区。实测后果（session_20260911_000240）：炸弹出现的头 2 帧
+    输出与玩家输入完全相反（`out=(0.98,-0.20)` 而玩家按左，weight=1.0），接下来 ~150 帧
+    全是 `budget_no_improving_action`（所有候选都“在圈里”，风险拉不开差 → 一次都不介入）。
+    炸弹 `collisionDamage=0`（entities2.xml id=4 全部变体）→ 它**只是定时一次性爆炸**，
+    不是接触威胁。模型分两种（`sensors/bombs.lua`）：
+    * **停着的炸弹**（自报速度 ≈ 0）= “第一次看到这颗炸弹的帧 + 变体默认引信”倒计时，
+      爆圈只在预估爆炸帧前后生效 → 玩家可以先路过、到点再走开。
+    * **追着跑的炸弹**（速度 ≥ 0.5px/帧且方向朝玩家；巨魔炸弹家族靠得近也算）=
+      **危险从现在开始**，一直盖到预估爆炸帧。用户 2026-09-13 说得对：“站着等它快爆炸再跑
+      是跑不开的，它会一直跟着你，玩家速度有限”。实测 `bomb:655` 以 **10px/帧** 扑向玩家
+      （玩家 3~6px/帧），扑到 ~45px 停住等炸。闭环复现（`tools/repro_fixes.py` F8b）：
+      只盖爆炸帧 → 第 9 帧才出手、爆炸时只剩 **17.3px（被炸到）**；从现在就开始 → 出手在第 0 帧、
+      爆炸时 **129.1px（躲开）**。
+    另外**外推绝不能“冲过头”**：追踪炸弹到位就停，按自报速度线性外推会把它预测到玩家身后
+    （bomb:655 的 10px/帧 × 39 帧 = 390px），规划器于是看到的禁区在身后、反而**朝炸弹走**
+    （离线复现：爆炸时距离 45px → 27.8px）。→ `future_motion.pos` 对 `chasing` 走
+    “朝 `chaseTargetX/Y` 逼近、到位即停”的夹位模型，并让 `geometry.prepare` 把它从
+    线性快路径里排除（`not e.chasing`）。
+
+16. **动画关键字分类里“通用关键字会抢掉专有关键字”**：`classify_animation` 原按字典
+    顺序匹配，`attack` 排在前面 → `WristAttackLeft` 被判成 `melee`（不在
+    `HIGH_VALUE_CATEGORIES` 里）→ 条目直接从库里消失 → 运行时只能报 `anim_missing`，
+    Mother 的挥臂/刮地/踏地整条预判链根本不存在（回放 17 次受击里 8 次判 nominal_safe）。
+    修法：取**词首位置最靠前**的关键字（`wrist`@0 胜 `attack`@5，`laser`@0 胜 `attack`@6；
+    `LaserAttack` 之前也被误判成 melee），不是按表顺序。
+
+17. **冲击/出手帧的真值在 anm2 的 `<Triggers>` 里**：`Trigger EventId` 指向根节点
+    `<Events>` 的名字，`Shoot` 事件的那一帧就是“打出去/砸下去”的时刻。实测校准：
+    `912:0 WristAttackLeft` 66 帧 = Shoot@**46**、`GroundPound` 42 帧 = Shoot@22、
+    `ScrapeAttack` 26 帧 = Shoot@12、`ThrowKnife` 74 帧 = Shoot@54。
+    旧解析只看 NullAnimations 可见性 + `windup_ratio` 拍脑袋比例 → 挥臂的冲击帧会算到
+    ≈30（0.45×66）而不是 46，提前 16 帧“落点”就完全错位。
+
+18. **大体积敌人播攻击动画时，接触圈半径 ≠ 安全距离**：Mother `912:10` 的
+    `collisionRadius`/`Entity.Size` = 110（玩家 10 → 接触圈 120），但她的双手在
+    `912.000_witness.anm2` 里左右各摊到 **±206px**（layer `left`/`right` 的 XPosition+Width）。
+    回放 16 次 `srcT=912` 受击的站位是 **128~168px**，正好在 120 圈外一点点（8 次判
+    `nominal_safe`）。→ 攻击期给 `bossAttackReach=48` 的额外禁区；同时窗口不能只有 1~2 帧
+    （所有候选都“在圈里”，逃逸拿不到收益 → 平手 → 退化成不介入）。
+
+19. **`wide` 扩窗不能被“大半径的接触敌人”触发**：旧条件是 `e.radius>=32`，Boss 本体
+    r=110 每帧都命中 → horizon 18→30，每次决策成本 +70%；Mother 战里直接造成
+    3 次 `baseline_budget_incomplete`（连基线评估都没算完 → 一帧都不介入，被弹幕白打）。
+    扩窗只该留给“危险区覆盖玩家、18 帧跑不出去”的炸弹/激光/大半径非接触威胁。
+
 ## 6. 已验证的设计决策（不要"修回去"）
 
 | 决策 | 依据 |
@@ -175,15 +224,26 @@ direction_smooth / input_synthesizer / threat_level / spatial` **都是死代码
 | **玩家/友方地面液体永不算威胁**（`PLAYER_CREEP_*` + `FLAG_FRIENDLY` 链） | 这些 variant 的生成者常为空 → 旧实现把自己的水迹当敌方避让（复现 4 条 → 2 条） |
 | **飞行免疫地面液体/地刺/TNT，但仍受火堆与尖刺岩石伤害** | wiki/Flight + wiki/TNT（TNT 只在被摧毁时爆炸）；飞行时 TNT 不再当危险 |
 | **近失（擦边）只在平手时优先，且要差 ≥2 分才改写** | 擦边 2px 与从容 20px 同 risk → 平手按"贴近意图"选 → 选擦边；但阈值太小会为 0.1px 裕量把方向掰到意图外 |
+| **炸弹分两种模型**：停着的 = 定时一次性爆圈（引信读不到就按变体默认 + “首次看到帧”倒计时，估计过期则短窗口重新武装）；**追着跑的 = 危险从现在开始** | 无引信接口（坑 15）→ 旧实现 (0,∞) 把 90px 爆圈变成永久禁区；改完两种模型：路过停着的炸弹不接管（F8：`nominal_safe`）、“快炸了且在圈内”给出指向圈外的逃逸（风险 137.2→0.0、终点距炸弹 127px）；追踪型不能再等爆炸（F8b：等 → 17.3px 被炸到；现在就跑 → 129.1px 躲开） |
+| **追踪炸弹的外推“到位就停”**（朝锁定玩家位置逼近，不允许冲过头） | 线性外推会把它预测到玩家身后 390px → 规划器看见的禁区在身后、反而朝炸弹走（复现：爆炸时 45px→27.8px）；夹位后方向正确 |
+| **追踪炸弹单独一个 MCM 开关**（`dodgeChasingBombs`，危险源页 → “躲避追踪炸弹（追着你跑的炸弹）”） | 用户要求“这一类要能单独关掉”，并且明确“**关闭就是不处理**，别把普通炸弹的躲避机制套上去，否则跟没关一样”。所以关闭时巨魔炸弹家族（variant 3/4/8/18）**整类不采集**（不是降级成普通炸弹）；普通炸弹/玩家自己扔的炸弹不受影响 |
+| **砸击类攻击的落点锁在“起手帧的玩家位置”**（不跟随），窗口盖到动画结束 | 每帧重算成当前玩家位置 = 禁区跟着玩家跑，永远躲不掉（同炸弹永久禁区那个病）；锁死后闭环复现：46 帧前摇结束时玩家离落点 113.6px > 爆圈 110（`tests/shared_control.lua` 回归） |
+| **大体积敌人（Size≥40）攻击期额外 +48px 禁区**（近战/砸击/跳跃类；已建模的动画也加） | Mother 双手在 anm2 里摊到 ±206px，实测挨打站位 128~168px；repro F9：判安全（盲区）3→0、识别到危险 7→14 |
+| **冲击帧用 anm2 Trigger（`Shoot` 事件）而不是 `windup_ratio` 比例** | WristAttackLeft 66 帧 = Shoot@46 / GroundPound@22 / ThrowKnife@54 / ScrapeAttack@12（坑 17）；后者的启发值会提前 ~16 帧 |
+| **`plannerHorizonWide` 不因大半径接触敌人触发**（`kind=="enemy"` 不算） | Boss 本体 r=110 每帧触发扩窗 → 决策成本 +70% → Mother 战 3 次 `baseline_budget_incomplete`（坑 19） |
 
 ## 7. 已知未修 / 下一步
 
-1. **炸弹引信读不到**：`sensors/bombs.lua` 的 `ExplosionCountdown` 在回放里 408/408 全 nil
-   （`confidence` 恒 0.3）→ `threat/geometry.lua` 的 `window()` 返回 `(0, math.huge)`，
-   爆圈被当成"立刻且永久"。后果：从 ~172px 外就开始避让、且不会"炸完再回去"。
-   （**与"被冻住"无关**，那是零向量 + 地刺硬墙导致的。）
+1. **炸弹引信读不到**（**2026-09-13 已修主体**）：`EntityBomb` 没有只读引信接口（坑 15），
+   旧实现退回 `window()=(0, math.huge)` → 90px 爆圈当永久禁区。现已改成“首次看到帧 + 变体默认引信”
+   的定时模型（`sensors/bombs.lua`：普通 90 帧 / 追踪炸弹 45 帧，估计过期则短窗口重新武装）。
+   **仍不准的部分**：默认引信是常量，不是引擎真值——炸弹可能在“第一次被看到”之前就点着了
+   （除非离开/重进房间重置计时，wiki）；追踪炸弹本身引信随机（1.5~2.5s）。所以现在的口径是
+   “宁可早一点离开爆圈”，而不是精确卡点。
 2. **搜索仍可能被预算截断**：约 96 checks/ms，`budgetMs=5` ≈ 480 checks；而 19 候选 × 3 威胁 × 30 帧 ≈ 1700。
-   候选顺序已保证先比重要的。彻底解决需要"廉价预排序 → 只对前几名做全量评估"的两段式重构。
+   候选顺序已保证先比重要的。**2026-09-13 的部分缓解**：`plannerHorizonWide` 不再因大半径
+   接触敌人触发（坑 19）——Mother 战不再因为 Boss 本体 r=110 把 horizon 拉到 30 而连基线都算不完。
+   彻底解决仍需“廉价预排序 → 只对前几名做全量评估”的两段式重构（AGENTS 下一步 #2 仍然有效）。
 3. **无时序规划**：候选是"整段固定方向"，不会"等弹幕过去再走"。机关走廊靠"缩窄 + 只在蓄力期"缓解。
 4. `minHoldFrames` / `input_synthesizer` / `escape_lock` **不是**解决卡手的正确方向
    （混合已在 `input_writer` 内实现；保持时长会加重抢操作）。别再接入它们。
@@ -197,6 +257,10 @@ direction_smooth / input_synthesizer / threat_level / spatial` **都是死代码
    * 因此下一步要动的是：①让规划器更早意识到"站在环形发射者旁边"危险（发射者前摇/环形的预判）；
      ②**两段式搜索**（廉价预排序 → 只对前几名做全量评估）把稠密场景的覆盖补回来。
      单纯的弧线拟合在这两例里帮不上（弹道本来是直的）。
+6. **Boss 贴墙角落时仍会“看见了但动不了”**：Mother 战 repro（`tools/repro_fixes.py` F9）里，
+   玩家被挤在右墙、本体在左侧时，18 帧内跑不出 168px 的扩圈 → `no_improving_action`（不接管）。
+   比 `nominal_safe`（盲）好，但仍然是没帮上——需要“更早的预警”（砸击 46 帧前摇已部分解决）
+   或允许“退而求其次”的次优方向（现在 `improvement` 不过阈值就什么都不做）。
 
 ## 8. 回放数据与复核口径
 
@@ -219,10 +283,61 @@ direction_smooth / input_synthesizer / threat_level / spatial` **都是死代码
 | **`avoidance_start` 里 effect 占比** | 若仍有玩家/友方水迹（看着是自己踩出来的液体）→ 查 `PLAYER_CREEP_*` 与 `FLAG_FRIENDLY` 链 |
 | **`metrics.triggerKind` 出现 `hop`** | 说明跳蛛预判在生效；`detail=4` 快照里 `hopOn/hopIn/hopFlight/hopLX/hopLY` 可直接核对节奏与落点 |
 | **敌人采集日志里不再出现 963** | 冰雕像（Frozen Enemy）应完全不被采集；若仍在，查 `skipFrozenStatues` |
-| **`anim_gaps.csv` / 报告“动画库缺条目”** | 精灵在播攻击类动画但动画库里没条目 → 这就是动画预判覆盖不到的敌人；按 type/variant/动画 排序补 `tools/parse_animations.py` 的关键字或高价值分类 |
+| **`anim_gaps.csv` / 报告“动画库缺条目”** | 精灵在播攻击类动画但动画库里没条目 → 这就是动画预判覆盖不到的敌人；按 type/variant/动画 排序补 `tools/parse_animations.py` 的关键字或高价值分类。大体积敌人（Size≥40）即使缺条目也会拿到“攻击期 +48px 禁区”的兜底，但那是保守措施，不是真预判 |
+| **`avoidance_start` 里 bomb 占比** | 炸弹不应该“一出现就长期接管”：现在窗口是“预估爆炸帧前后”，引信还早就应看到 `nominal_safe`。若仍出现长时间 bomb 段，查 `sensors/bombs.lua` 的 `fuseSource`（`variant`/`stale`）与 `appearFrame` |
+| **detail4 里 `unknownAttack=true` 或 `aimLocked=true`** | `aimLocked`=Mother 这类矄击的锁定落点；`unknownAttack`=大体积敌人的保守扩圈（应同时伴随 `anim_gaps` 条目） |
 | **`hop_measured.csv` / 报告“跳跃型敌人实测”** | 跳蛛等的实测前摇/滞空/跳距/间隔/朝向误差。判断标准：**实测前摇 ≈ 库里的启发值**说明动画信号可用；**≈0** 说明该动画没有前摇（动画只能提前 1~2 帧，主力靠节拍模型）；朝向误差 >75° 会被自动放弃瞄准预测 |
 
 ## 9. 修复历史（近期，含根因与证据）
+
+### 2026-09-13 夜 — 追踪炸弹“左右脑打架”、Mother（妈腿）战老是吃伤害
+
+用户反馈 2 条（先 `python tools/post_play.py --sessions 5` 出报告 → 再逐帧归因）。
+
+| 反馈 | 根因 | 证据 / 复现 |
+|---|---|---|
+| ① 开箱开出“会跟踪爆炸的炸弹”后，算法开始左脑跟右脑打架 | `EntityBomb` 没有只读引信（只有 `SetExplosionCountdown`，IsaacDocs/rep/EntityBomb）→ 读到的恒为 nil（回放 408/408）→ `threat/geometry.lua` 的 `window()` 退回 `(0, math.huge)` → 90px 爆圈被当成“立刻且永久”的实心禁区。后果：所有候选都“在圈里”→ 风险拉不开差 → 要么 2 帧 180° 反向猛推（`out=(0.98,-0.20)` 而玩家按左，weight=1.0）、要么直接 `budget_no_improving_action` 等 150 帧（session_20260911_000240 帧 17249~17251；session_20260913_223945 也有 34 段 bomb 触发接管） | `tools/repro_fixes.py` F8（真实 Megatroll Bomb 数据）：旧模型介入并挤开玩家（首碰撞=0）→ 新模型“引信还早”判 `nominal_safe` 不接管；“12 帧后炸”则 `safe_evasion`、终点距炸弹 127px > 爆圈 100 |
+| ② 打妈腿（Mother）时不好用、老是吃伤害 | 两件事叠在一起：（a）她的 `wristattack/scrapeattack/groundpound/swipe` 全部没进动画库（旧 `classify_animation` 按字典序先命中通用关键字 `attack` → 判成 `melee` → 被 `--high-value-only` 滤掉）→ 完全没有预判；（b）她的双手在 anm2 里左右各摊到 **±206px**，而本体 `collisionRadius/Size=110`（接触圈 120）→ 玩家在 128~168px 处被手打到而规划器判 `nominal_safe`（16 次 `srcT=912` 受击中 8 次如此，另 3 次 `baseline_budget_incomplete`、4 次是玩家自己关了 ALT） | `analysis/20260913_230022_play/report/report.md`（session 8：22 次受击、`anim_missing` 里 `912:0:wristattackleft/right`、`912:10:chargeloop/jumpdown`）；repro F9：同样 16 组真实站位，判安全 3→0、识别到危险 7→14 |
+
+改动：
+- `sensors/bombs.lua`：重写引信模型——引信可读就用；读不到则“**第一次看到这颗炸弹的帧 + 变体默认引信**”
+  倒计时（追踪炸弹 45 帧、普通 90 帧，`config.bombFuse*`），预估过期则 `bombFuseStaleLead` 帧短窗口重新武装；
+  窗口有限（`appearFrame/endFrame` 必填），并记 `firstSeenFrame/fuseSource/timingKnown` 供回放校准。
+- `sensors/npc_attacks.lua`：新增 `slam` 落点锁定（`aimPoint`，起手帧的玩家位置，动画重播才换目标）、
+  大体积敌人“未建模/近战类攻击动画”的额外禁区（`buildUnknownAttackEntry`，`bossAttackReach=48`、
+  窗口按动画剩余帧数或 `bossAttackReachFrames=18`）、`ATTACK_HINT_WORDS` 补上近战关键字
+  （smash/slam/punch/swipe/scrape/wrist/chomp/pound/kick/slash）。
+- `data/npc_profiles.lua`：新增 `slam` 类别（`aimLock=true`、`slamRadiusByType[912]=100`）。
+- `tools/parse_animations.py`：关键字分类改为“**词首位置最靠前**”而不是字典序（修 WristAttack/LaserAttack
+  被通用 `attack` 抢走）；新增 `calculate_trigger_frame`——用 anm2 `<Triggers>` 的 `Shoot` 事件当作
+  冲击/出手帧（WristAttackLeft 66 帧 = 46），优先于 NullAnimations 与 `windup_ratio`；
+  `jumpdown` 从 `falling` 改成 `slam`；`HIGH_VALUE_CATEGORIES` 加 `slam`；重生成 `data/npc_animdb.lua`
+  （纯新增 47 行：Mother 的挥臂/刮地/踏地/横扫/冲刺、各 Boss 的 JumpDown/BigJumpDown/Swipe/GroundSlam 等）。
+- `decision/predictive.lua`：`plannerHorizonWide` 只对炸弹/激光/大半径**非接触**威胁生效（坑 19）。
+- `config/defaults.lua`：`bombFuseFrames/bombTrollFuseFrames/bombFuseSafetyLead/bombFuseStaleLead/`
+  `bossAttackReach/bossAttackReachMinSize/bossAttackReachFrames`。
+- 测试：`tests/smoke_main.lua` 新增/改写 3 条（炸弹有限窗口且按变体给引信、Mother 砸击落点锁定 +
+  动画重播不跟人、大体积敌人缺条目兜底且杂兵不扩圈），`tests/shared_control.lua` 新增 3 条
+  （issue 1 炸弹是否插手 / issue 2 120px 判安全对照 + 46 帧前摇闭环出圈）；
+  `tools/repro_fixes.lua` 新增 F8/F9 两段真实数据复现。
+- 验证：Lua 5.1 + 5.3 全绿（SMOKE 69 passed / SHARED CONTROL 57 passed）；
+  `python tools/repro_fixes.py` F8/F8b/F9 见上表。
+
+**同日追问修正（用户：“追着你跑的炸弹，站着等快爆炸再跑是跑不开的”）**：只给炸弹加“有限引信窗口”
+还不够——追踪型炸弹必须**从现在**就算危险（它在追你，等到快爆炸时它已经贴脸了）。改动：
+`sensors/bombs.lua` 判定 `chasing`（速度朝玩家；巨魔炸弹家族近身也算，因为引信随机且会“扑一下停一下”）
+→ 危险窗口 `[现在, 预估爆炸帧]`；`threat/future_motion.lua` 对 `chasing` 走
+“朝 `chaseTargetX/Y` 逼近、到位即停”的夹位外推（否则线性外推冲过头 → 规划器朝炸弹走，
+复现 45px→27.8px）；`threat/geometry.lua` 把它排除出线性快路径。新增回归：
+`tests/smoke_main.lua` 的“chasing bomb is live now”（含巨魔家族近身/远处/玩家自己的炸弹/扔飞四种）；
+`tests/shared_control.lua` 的 `issue 1b`（静止 vs 追踪同一引信的对照 + “不许朝袭来的炸弹走”）；
+`tools/repro_fixes.lua` F8b 闭环（等 → 17.3px 被炸到；现在就跑 → 129.1px 躲开）。
+另按用户要求加了**单独的 MCM 开关** `dodgeChasingBombs`（危险源 → “躲避追踪炸弹（追着你跑的炸弹）”，
+默认开启；**关掉 = 这一类完全不处理**：巨魔炸弹家族（variant 3/4/8/18）连采集都不做，
+不会退化成“普通炸弹”再躲一遍——用户第二轮明确纠正过这一点）。
+`addBoolean` 支持可选中文标签（只有显式给了第 6 项的条目才用，老条目显示不变），
+并加了“开关是真实 MCM 设置 + 关掉后整类不进追踪器”的接线回归（属性名必须在 defaults 里，
+否则 save/load 会静默丢字段）。
 
 ### 2026-09-12 夜 — 冰雕像误判、跳蛛（Trite）预判、脏样本不再关掉高阶轨迹模型
 

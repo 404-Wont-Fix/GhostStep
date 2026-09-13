@@ -69,9 +69,11 @@ return {
     {name="Jump", totalFrames=31, windupFrames=15, category="jumping"},
   },
   ["20:0"] = {
+    {name="JumpDown", totalFrames=64, windupFrames=33, category="slam"},
     {name="JumpUp", totalFrames=15, windupFrames=7, category="jumping"},
   },
   ["212:0"] = {
+    {name="JumpDown", totalFrames=18, windupFrames=11, category="slam"},
     {name="JumpUp", totalFrames=22, windupFrames=11, category="jumping"},
   },
   ["213:0"] = {
@@ -104,11 +106,13 @@ return {
   ["246:0"] = {
     {name="Hop", totalFrames=26, windupFrames=11, category="hopping"},
     {name="BigJumpUp", totalFrames=12, windupFrames=6, category="jumping"},
+    {name="BigJumpDown", totalFrames=38, windupFrames=22, category="slam"},
     {name="Laser", totalFrames=25, windupFrames=22, category="laser"},
   },
   ["246:1"] = {
     {name="Hop", totalFrames=26, windupFrames=11, category="hopping"},
     {name="BigJumpUp", totalFrames=12, windupFrames=6, category="jumping"},
+    {name="BigJumpDown", totalFrames=38, windupFrames=22, category="slam"},
   },
   ["247:0"] = {
     {name="Shoot", totalFrames=61, windupFrames=24, category="ranged"},
@@ -263,10 +267,12 @@ return {
   ["29:0"] = {
     {name="Hop", totalFrames=26, windupFrames=11, category="hopping"},
     {name="BigJumpUp", totalFrames=12, windupFrames=6, category="jumping"},
+    {name="BigJumpDown", totalFrames=40, windupFrames=22, category="slam"},
   },
   ["29:1"] = {
     {name="Hop", totalFrames=26, windupFrames=11, category="hopping"},
     {name="BigJumpUp", totalFrames=12, windupFrames=6, category="jumping"},
+    {name="BigJumpDown", totalFrames=40, windupFrames=22, category="slam"},
   },
   ["29:2"] = {
     {name="Hop", totalFrames=26, windupFrames=11, category="hopping"},
@@ -282,6 +288,7 @@ return {
   ["303:0"] = {
     {name="Hop", totalFrames=26, windupFrames=11, category="hopping"},
     {name="BigJumpUp", totalFrames=12, windupFrames=6, category="jumping"},
+    {name="BigJumpDown", totalFrames=40, windupFrames=22, category="slam"},
   },
   ["305:0"] = {
     {name="Hop", totalFrames=26, windupFrames=11, category="hopping"},
@@ -299,10 +306,12 @@ return {
   ["34:0"] = {
     {name="Hop", totalFrames=26, windupFrames=11, category="hopping"},
     {name="BigJumpUp", totalFrames=12, windupFrames=6, category="jumping"},
+    {name="BigJumpDown", totalFrames=40, windupFrames=22, category="slam"},
   },
   ["34:1"] = {
     {name="Hop", totalFrames=26, windupFrames=11, category="hopping"},
     {name="BigJumpUp", totalFrames=12, windupFrames=6, category="jumping"},
+    {name="BigJumpDown", totalFrames=40, windupFrames=22, category="slam"},
   },
   ["375:0"] = {
     {name="ShootingDown", totalFrames=13, windupFrames=5, category="ranged"},
@@ -329,6 +338,7 @@ return {
   },
   ["406:0"] = {
     {name="JumpUp", totalFrames=17, windupFrames=8, category="jumping"},
+    {name="JumpDown", totalFrames=19, windupFrames=5, category="slam"},
     {name="ShootRight", totalFrames=19, windupFrames=7, category="ranged"},
     {name="ShootLeft", totalFrames=19, windupFrames=7, category="ranged"},
     {name="ShootDown", totalFrames=19, windupFrames=7, category="ranged"},
@@ -336,6 +346,7 @@ return {
   },
   ["406:1"] = {
     {name="JumpUp", totalFrames=17, windupFrames=8, category="jumping"},
+    {name="JumpDown", totalFrames=19, windupFrames=5, category="slam"},
     {name="ShootRight", totalFrames=19, windupFrames=7, category="ranged"},
     {name="ShootLeft", totalFrames=19, windupFrames=7, category="ranged"},
     {name="ShootDown", totalFrames=19, windupFrames=7, category="ranged"},
@@ -368,9 +379,11 @@ return {
     {name="Shoot", totalFrames=29, windupFrames=11, category="ranged"},
   },
   ["43:0"] = {
+    {name="JumpDown", totalFrames=64, windupFrames=33, category="slam"},
     {name="JumpUp", totalFrames=15, windupFrames=7, category="jumping"},
   },
   ["43:1"] = {
+    {name="JumpDown", totalFrames=64, windupFrames=33, category="slam"},
     {name="JumpUp", totalFrames=15, windupFrames=7, category="jumping"},
   },
   ["45:0"] = {
@@ -391,6 +404,7 @@ return {
   ["59:0"] = {
     {name="JumpUpHead", totalFrames=46, windupFrames=23, category="jumping"},
     {name="JumpBody", totalFrames=46, windupFrames=23, category="jumping"},
+    {name="JumpDownHead", totalFrames=46, windupFrames=27, category="slam"},
   },
   ["60:0"] = {
     {name="Shoot", totalFrames=20, windupFrames=8, category="ranged"},
@@ -406,19 +420,27 @@ return {
   },
   ["68:0"] = {
     {name="JumpUp", totalFrames=34, windupFrames=17, category="jumping"},
+    {name="JumpDown", totalFrames=67, windupFrames=27, category="slam"},
   },
   ["68:1"] = {
     {name="JumpUp", totalFrames=34, windupFrames=17, category="jumping"},
+    {name="JumpDown", totalFrames=67, windupFrames=27, category="slam"},
   },
   ["74:0"] = {
     {name="JumpUp", totalFrames=17, windupFrames=8, category="jumping"},
+    {name="JumpDown", totalFrames=62, windupFrames=22, category="slam"},
   },
   ["75:0"] = {
     {name="JumpUp", totalFrames=17, windupFrames=8, category="jumping"},
+    {name="JumpDown", totalFrames=62, windupFrames=22, category="slam"},
   },
   ["76:0"] = {
     {name="Hop", totalFrames=38, windupFrames=17, category="hopping"},
     {name="JumpUp", totalFrames=17, windupFrames=8, category="jumping"},
+    {name="JumpDown", totalFrames=62, windupFrames=22, category="slam"},
+  },
+  ["804:0"] = {
+    {name="Slam", totalFrames=91, windupFrames=45, category="slam"},
   },
   ["805:0"] = {
     {name="Shoot", totalFrames=17, windupFrames=6, category="ranged"},
@@ -480,6 +502,7 @@ return {
     {name="Jump", totalFrames=27, windupFrames=13, category="jumping"},
   },
   ["86:0"] = {
+    {name="JumpDown", totalFrames=26, windupFrames=15, category="slam"},
     {name="JumpUp", totalFrames=26, windupFrames=13, category="jumping"},
     {name="JumpHori", totalFrames=26, windupFrames=13, category="jumping"},
     {name="ShootDown", totalFrames=20, windupFrames=8, category="ranged"},
@@ -514,6 +537,7 @@ return {
   },
   ["903:0"] = {
     {name="JumpUp", totalFrames=14, windupFrames=7, category="jumping"},
+    {name="JumpDown", totalFrames=26, windupFrames=8, category="slam"},
   },
   ["910:0"] = {
     {name="SpitFly", totalFrames=61, windupFrames=24, category="ranged"},
@@ -530,8 +554,21 @@ return {
     {name="SpitDown", totalFrames=35, windupFrames=14, category="ranged"},
   },
   ["912:0"] = {
+    {name="LaserAttack", totalFrames=46, windupFrames=13, category="laser"},
+    {name="LaserAttackLoop", totalFrames=10, windupFrames=1, category="laser"},
+    {name="LaserAttackEnd", totalFrames=14, windupFrames=1, category="laser"},
     {name="ThrowKnife", totalFrames=74, windupFrames=29, category="ranged"},
     {name="ThrowKnife2", totalFrames=74, windupFrames=29, category="ranged"},
+    {name="WristAttackRight", totalFrames=66, windupFrames=46, category="slam"},
+    {name="WristAttackLeft", totalFrames=66, windupFrames=46, category="slam"},
+    {name="WristAttackBoth", totalFrames=66, windupFrames=46, category="slam"},
+    {name="ScrapeAttack", totalFrames=26, windupFrames=11, category="slam"},
+    {name="ScrapeAttack2", totalFrames=26, windupFrames=11, category="slam"},
+    {name="ScrapeAttackDouble", totalFrames=40, windupFrames=18, category="slam"},
+    {name="GroundPound", totalFrames=42, windupFrames=21, category="slam"},
+    {name="GroundPound2", totalFrames=42, windupFrames=21, category="slam"},
+    {name="GroundPound3", totalFrames=42, windupFrames=21, category="slam"},
+    {name="GroundPoundDouble", totalFrames=54, windupFrames=27, category="slam"},
     {name="Shoot1", totalFrames=53, windupFrames=21, category="ranged"},
     {name="Shoot2", totalFrames=47, windupFrames=18, category="ranged"},
   },
@@ -545,7 +582,13 @@ return {
     {name="ShootRightBegin", totalFrames=24, windupFrames=23, category="ranged"},
     {name="ShootRightLoop", totalFrames=12, windupFrames=1, category="ranged"},
     {name="ShootRightEnd", totalFrames=16, windupFrames=1, category="ranged"},
+    {name="Chomp", totalFrames=13, windupFrames=5, category="slam"},
+    {name="SwipeLeft", totalFrames=37, windupFrames=18, category="slam"},
+    {name="SwipeRight", totalFrames=37, windupFrames=18, category="slam"},
+    {name="SwipeDown", totalFrames=37, windupFrames=18, category="slam"},
+    {name="SwipeUp", totalFrames=37, windupFrames=18, category="slam"},
     {name="JumpUp", totalFrames=27, windupFrames=13, category="jumping"},
+    {name="JumpDown", totalFrames=30, windupFrames=5, category="slam"},
   },
   ["913:0"] = {
     {name="Spit", totalFrames=24, windupFrames=9, category="ranged"},
@@ -557,6 +600,10 @@ return {
   },
   ["915:0"] = {
     {name="JumpBlast", totalFrames=50, windupFrames=25, category="jumping"},
+  },
+  ["916:0"] = {
+    {name="Swipe", totalFrames=35, windupFrames=15, category="slam"},
+    {name="GroundSlam", totalFrames=49, windupFrames=24, category="slam"},
   },
   ["919:0"] = {
     {name="BrimstoneDown", totalFrames=73, windupFrames=25, category="laser"},

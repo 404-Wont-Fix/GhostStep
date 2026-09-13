@@ -952,6 +952,111 @@ test('planner acts on the animation pre-warning (windup, before any movement)',f
     assert(st.decision.metrics.nominalHit and st.decision.metrics.nominalHit>0,
         'standing on the landing spot must be a predicted hit')
 end)
+
+test('issue 1: a bomb that will not blow soon is not a permanent no-go zone',function()
+    -- 用户反馈（2026-09-13）：“开箱子开出了会跟踪爆炸的炸弹，算法就开始左脑跟右脑打架”。
+    -- 根因：EntityBomb 只有 SetExplosionCountdown，没有只读引信（IsaacDocs/rep/EntityBomb）→
+    -- 旧实现 window() 返回 (0, math.huge) → 90px 爆圈被当成“立刻且永久”的禁区：
+    -- 所有候选都“在圈里” → 平手靠意图代价 → 输出在“不动”与“180° 反向猛推”之间抽抽。
+    local function bombAt(appearFrame)
+        return {id='bomb:24:1',index=24,kind='bomb',pos=Vector(60,0),vel=Vector(0,0),speed=0,
+            radius=90,damage=100,appearFrame=appearFrame,endFrame=appearFrame+2}
+    end
+    -- ① 引信还早（预估：首次见到 + 90 - 6）→ 不应该干预
+    local st=state(); st.player.position=Vector(0,0)
+    local far=run(st,{bombAt(84)},nil,0)
+    assert(far==nil and st.decision.reason=='nominal_safe',
+        'a bomb far from exploding must not move the player, reason='..tostring(st.decision.reason))
+    -- ② 快炸了、玩家在爆圈里 → 必须在爆炸前离开爆圈（方向不限，只看“跑出去了”）
+    local st2=state(); st2.player.position=Vector(0,0)
+    local cmd=run(st2,{bombAt(20)},nil,0)
+    assert(cmd and cmd:Length()>0.5,'an imminent blast inside the footprint must be dodged')
+    assert(st2.decision.metrics.nominalHit==20,'standing still must be a predicted hit at the blast frame')
+    assert(st2.decision.metrics.nominalRisk>st2.decision.metrics.selectedRisk,'escaping the blast must lower risk')
+    local ex,ey=st2.decision.metrics.selectedEndX,st2.decision.metrics.selectedEndY
+    local d=math.sqrt((ex-60)^2+ey^2)
+    assert(d>=100,'the chosen escape must clear the blast circle (90+10), got '..tostring(d))
+end)
+
+test('issue 2: boss body only explains the 130px nominal_safe hits, attack reach fixes it',function()
+    -- 回放 session_20260913_223945（Mother 战，17 次受击）：912:10 本体 Size=110，
+    -- 玩家在她 133px 外（她 440,362 / 玩家 570,394）时规划器判 nominal_safe，然后挨打 —
+    -- 因为 110+10=120 的接触圈差 13px 就“安全”，而她的挥臂/刮地当时根本没被建模。
+    local boss=Vector(440,362); local player=Vector(570,394)
+    local function entry(radius)
+        return {id='enemy:10:1',index=10,kind='enemy',pos=boss,vel=Vector(0,0),speed=0,radius=radius,damage=1}
+    end
+    local st=state(); st.player.position=Vector(player.X,player.Y); st.player.velocity=Vector(0,0)
+    local before=run(st,{entry(110)},nil,0)
+    assert(before==nil and st.decision.reason=='nominal_safe',
+        'reproduction: body-only circle says safe at 133px, got '..tostring(st.decision.reason))
+    -- 加上攻击期的额外禁区（110 + bossAttackReach 48）→ 现在必须躲
+    local st2=state(); st2.player.position=Vector(player.X,player.Y); st2.player.velocity=Vector(0,0)
+    local after=run(st2,{entry(158)},nil,0)
+    assert(after and after:Length()>0.2,'the attack-period reach must make the planner react')
+    assert(st2.decision.metrics.nominalRisk>st2.decision.metrics.selectedRisk,'leaving the reach must lower risk')
+    local away=Vector(player.X-boss.X,player.Y-boss.Y):Normalized()
+    assert(after:Normalized().X*away.X+after:Normalized().Y*away.Y>0.2,
+        'escape must not run into the boss, got ('..after.X..','..after.Y..')')
+end)
+
+test('issue 2: aimed slam makes the player clear the impact circle before it lands',function()
+    -- Mother 的 WristAttackLeft：impact 帧 = anm2 的 ShootTrigger（第 46 帧，66 帧动画）。
+    -- 落点锁在起手时的玩家位置（半径 100）→ 站着不动必挨，走出去就安全。
+    local slam={id='npc_attack:10050:1',index=10050,kind='npc_attack',pos=Vector(0,0),vel=Vector(0,0),
+        speed=0,radius=100,damage=1,appearFrame=46,endFrame=66,aimLocked=true}
+    local st=state(); local cfg=st.config
+    local W=cfg.maxDodgeWeight or 0.85
+    local p,v=Vector(0,0),Vector(0,0)
+    local ter=Terrain.create()
+    for frame=0,45 do
+        st.player.position=Vector(p.X,p.Y); st.player.velocity=Vector(v.X,v.Y)
+        local cmd=Planner.run(st,{config=cfg,terrain=ter,getHazards=function() return {slam} end},frame)
+        local u=cmd and cmd*W or Vector(0,0)
+        v=Vector(0.75*v.X+1.5*u.X,0.75*v.Y+1.5*u.Y)
+        p=p+v
+    end
+    assert(p:Length()>110,'impact circle (100 + player 10) must be cleared, distance='..tostring(p:Length()))
+end)
+
+test('issue 1b: a chasing bomb must be escaped now, not after waiting for the fuse',function()
+    -- 用户 2026-09-13 补充：“那种会追着你跑、然后自爆的炸弹，你站在原地等等、它要爆炸再跑
+    -- 是跑不开的，它会一直跟着你，玩家速度也是有限的”。
+    -- 回放实测：session_20260911_000240 bomb:655 以 10px/帧 扑向玩家（玩家 3~4px/帧）。
+    local FUSE=45
+    local function bomb(chasing)
+        -- 静止型：只在预估爆炸帧危险；追踪型：从“现在”开始危险
+        return {id='bomb:24:2',index=24,kind='bomb',pos=Vector(60,0),vel=Vector(0,0),speed=0,
+            radius=90,damage=100,chasing=chasing,fuseFrames=FUSE,
+            appearFrame=chasing and 0 or FUSE,endFrame=FUSE+2}
+    end
+    -- ① 静止炸弹 + 引信还早 → 不插手（可以路过）
+    local st=state(); st.player.position=Vector(0,0)
+    assert(run(st,{bomb(false)},nil,0)==nil and st.decision.reason=='nominal_safe',
+        'a parked bomb far from exploding must not move the player')
+    -- ② 同一位置/同一引信，但是“追着你跑”的 → 现在就必须脱离
+    local st2=state(); st2.player.position=Vector(0,0)
+    local cmd=run(st2,{bomb(true)},nil,0)
+    assert(cmd and cmd:Length()>0.5,'a chasing bomb must be escaped immediately, reason='..tostring(st2.decision.reason))
+    assert(st2.decision.metrics.nominalRisk>st2.decision.metrics.selectedRisk,'running away must lower risk')
+    local ex,ey=st2.decision.metrics.selectedEndX,st2.decision.metrics.selectedEndY
+    local d=math.sqrt((ex-60)^2+ey^2)
+    assert(d>100,'the escape must clear the blast circle, got '..tostring(d))
+    -- ③ 方向必须是“远离炸弹”（而不是随手挑一个方向：旧实现所有候选都在永久爆圈里 → 平手 → 乱选）
+    local dir=cmd:Normalized()
+    assert(dir.X<-0.3,'escape must point away from the chasing bomb (bomb at +x), got x='..tostring(dir.X))
+    -- ④ 冲刺型：炸弹在左边、速度朝着玩家（10px/帧）→ 逃逸绝不能往炸弹那边走。
+    -- 离线复现过的 bug：按自报速度线性外推会“冲过头”，预测禁区跑到玩家身后，
+    -- 规划器于是朝炸弹走（爆炸时距离从 45px 掉到 27.8px）。
+    local chase={id='bomb:24:3',index=24,kind='bomb',pos=Vector(-150,0),vel=Vector(10,0),speed=10,
+        radius=90,damage=100,chasing=true,appearFrame=0,endFrame=47,chaseTargetX=0,chaseTargetY=0}
+    local st4=state(); st4.player.position=Vector(0,0)
+    local cmd4=run(st4,{chase},nil,0)
+    assert(cmd4 and cmd4:Length()>0.5,'an incoming chasing bomb must be dodged, reason='..tostring(st4.decision.reason))
+    local d4=cmd4:Normalized()
+    assert(d4.X>-0.2,'must not walk into the incoming bomb (bomb at -x), got x='..tostring(d4.X))
+end)
+
 print(string.format('SHARED CONTROL: %d passed, %d failed',checks-failures,failures))
 print(string.format('SHARED CONTROL: %d passed, %d failed',checks-failures,failures))
 print(string.format('SHARED CONTROL: %d passed, %d failed',checks-failures,failures))

@@ -38,22 +38,35 @@ ATTACK_CATEGORIES = {
     "charge":     {"category": "charge",  "windup_ratio": 0.50},
     "cast":       {"category": "cast",    "windup_ratio": 0.35},
     "summon":     {"category": "summon",  "windup_ratio": 0.50},
+    # 晖击/挥扫（Mother 的 WristAttack/ScrapeAttack/GroundPound/Swipe/Chomp 等）。
+    # 旧表没有这些关键字 → 整条动画预判链对 Mother 的爪子失效：回放 session_20260913_223945
+    # 里她的 wristattack/scrapeattack 全部落进 anim_missing，玩家在离她中心 128~140px 处
+    # 被她打到而规划器判 nominal_safe（17 次受击里 8 次是这个原因）。
+    "wrist":      {"category": "slam",    "windup_ratio": 0.70},
+    "scrape":     {"category": "slam",    "windup_ratio": 0.45},
+    "swipe":      {"category": "slam",    "windup_ratio": 0.50},
+    "groundpound":{"category": "slam",    "windup_ratio": 0.50},
+    "slam":       {"category": "slam",    "windup_ratio": 0.50},
+    "pound":      {"category": "slam",    "windup_ratio": 0.50},
+    "chomp":      {"category": "slam",    "windup_ratio": 0.40},
 }
 
 # Impact/landing categories
 IMPACT_CATEGORIES = {
-    "jumpdown": {"category": "falling",   "windup_ratio": 0.60},
-    "stomp":    {"category": "stomping",  "windup_ratio": 0.50},
-    "jump":     {"category": "jumping",   "windup_ratio": 0.50},
-    "hop":      {"category": "hopping",   "windup_ratio": 0.45},
-    "land":     {"category": "landing",   "windup_ratio": 0.60},
+    # JumpDown = 朝玩家落下的冲击（Mother 二阶段、Blastocyst 等）→ 归 slam（落点锁在起手时的玩家位置），
+    # 旧的 "falling" 既不在 HIGH_VALUE_CATEGORIES 里、也没有对应 profile → 整条链等于没有。
+    "jumpdown": {"category": "slam",     "windup_ratio": 0.60},
+    "stomp":    {"category": "stomping", "windup_ratio": 0.50},
+    "jump":     {"category": "jumping",  "windup_ratio": 0.50},
+    "hop":      {"category": "hopping",  "windup_ratio": 0.45},
+    "land":     {"category": "landing",  "windup_ratio": 0.60},
 }
 
 # Categories included in --high-value-only mode (GhostStep threat generation uses these)
 # "hopping" 必须算高价值：跳蛛/跳跳尸的跳跃动画就叫 Hop（029.001_Trite.anm2：
 # Hop 26 帧 / BigJumpUp 12 帧）。旧表只收 jumping，于是 29:0/29:1 在库里只有
 # "BigJumpUp"，运行时精灵播的是 "Hop" → 查不到条目 → 动画预判整条链对跳蛛失效。
-HIGH_VALUE_CATEGORIES = {"stomping", "jumping", "hopping", "laser", "ranged"}
+HIGH_VALUE_CATEGORIES = {"stomping", "jumping", "hopping", "laser", "ranged", "slam"}
 
 # Ignore keywords (pure visual/movement animations)
 IGNORE_KEYWORDS = [
@@ -116,16 +129,42 @@ def keyword_match(name, lower, kw):
     末尾不做限制："Shooting"、"ShootAndRotate1"、"Jump2" 这类后缀/数字都算合法。
     "Shopkeeper" 里 "hop" 前是 "S" 且当前是小写 "h" → 不是词首 → 正确拒绝。
     """
+    return keyword_index(name, lower, kw) is not None
+
+
+def keyword_index(name, lower, kw):
+    """词首匹配的最小位置（没匹配到返回 None）。"""
     start = 0
     while True:
         i = lower.find(kw, start)
         if i < 0:
-            return False
+            return None
         if (i == 0 or not name[i - 1].isalpha()
                 or (name[i - 1].islower() and name[i].isupper())
                 or name[i].isdigit()):
-            return True
+            return i
         start = i + 1
+
+
+def best_category(name, lower, table):
+    """从关键字表里选最贴合的分类。
+
+    规则：**出现位置最靠前**的优先，同位置取更长的关键字。
+    为什么不是"按表里的顺序"：通用关键字 "attack" 会抢走专有关键字，
+    WristAttackLeft 就被判成了 melee（不在高价值分类里）→ 整条条目从库里消失，
+    Mother 的挥臂预判根本不存在（回放里只能看到 anim_missing）。
+    现在："wrist"(位置 0) 胜"attack"(位置 5)、"scrape" 胜 "attack"、
+    "laser" 胜 "attack"（LaserAttack 之前也被误判成 melee）。
+    """
+    best = None
+    for keyword, info in table.items():
+        i = keyword_index(name, lower, keyword)
+        if i is None:
+            continue
+        score = (i, -len(keyword))
+        if best is None or score < best[0]:
+            best = (score, info)
+    return best[1] if best else None
 
 
 def classify_animation(name):
@@ -144,25 +183,16 @@ def classify_animation(name):
     is_windup_phase = any(kw in lower for kw in WINDUP_KEYWORDS)
     is_attack_phase = any(kw in lower for kw in ATTACK_PHASE_KEYWORDS)
 
-    # Attack category match
-    for keyword, info in ATTACK_CATEGORIES.items():
-        if keyword_match(name, lower, keyword):
-            if is_windup_phase and not is_attack_phase:
-                return info["category"], 1.0, True
-            if is_attack_phase and not is_windup_phase:
-                return info["category"], 0.0, True
-            return info["category"], info["windup_ratio"], True
-
-    # Impact category match
-    for keyword, info in IMPACT_CATEGORIES.items():
-        if keyword_match(name, lower, keyword):
-            if is_windup_phase and not is_attack_phase:
-                return info["category"], 1.0, True
-            if is_attack_phase and not is_windup_phase:
-                return info["category"], 0.0, True
-            return info["category"], info["windup_ratio"], True
-
-    return None, 0, False
+    info = best_category(name, lower, ATTACK_CATEGORIES)
+    if info is None:
+        info = best_category(name, lower, IMPACT_CATEGORIES)
+    if info is None:
+        return None, 0, False
+    if is_windup_phase and not is_attack_phase:
+        return info["category"], 1.0, True
+    if is_attack_phase and not is_windup_phase:
+        return info["category"], 0.0, True
+    return info["category"], info["windup_ratio"], True
 
 
 def calculate_frame_delay(anim_elem):
@@ -190,12 +220,44 @@ def calculate_event_frame(anim_elem):
     return None
 
 
+def calculate_trigger_frame(anim_elem, events):
+    """Trigger 帧：动画里的 <Trigger EventId=.. AtFrame=..> 事件，事件名从根节点 <Events> 解析。
+
+    比 windup_ratio 启发值可靠得多（实测校准）：
+      * 912:0 WristAttackLeft  66 帧 → Shoot@46（= 落下冲击帧）
+      * 912:0 ScrapeAttack     26 帧 → Shoot@12
+      * 912:0 GroundPound      42 帧 → Shoot@22
+      * 912:0 ThrowKnife       74 帧 → Shoot@54（飞刀出手帧）
+    旧解析只用 NullAnimations 的可见性变化，Mother 这些动画压根没有可用 null →
+    windup 只能靠 0.45 的拍脑袋比例，冲击帧会早 20 帧左右。
+    """
+    trig = anim_elem.find("Triggers")
+    if trig is None:
+        return None
+    best = None
+    for t in trig:
+        name = (events.get(t.get("EventId"), "") or "").lower()
+        if "shoot" in name:
+            frame = int(t.get("AtFrame", 0))
+            # 多次射击取最后一次：那才是“打完”的时刻
+            if best is None or frame > best:
+                best = frame
+    return best
+
+
 def parse_anm2(anm2_path):
     """Parse a single anm2 file, return list of animation dicts."""
     animations = []
     try:
         tree = ET.parse(anm2_path)
         root = tree.getroot()
+
+        # 事件表：Trigger 的 EventId → 事件名（Shoot/Explosion/Sound/Skip...）
+        events = {}
+        events_root = root.find("Events")
+        if events_root is not None:
+            for ev in events_root:
+                events[ev.get("Id")] = ev.get("Name") or ""
 
         for anim in root.iter("Animation"):
             name = anim.get("Name", "")
@@ -205,7 +267,12 @@ def parse_anm2(anm2_path):
             total_delay = calculate_frame_delay(anim)
             effective_frames = max(frame_num, total_delay) if total_delay > 0 else frame_num
 
-            event_frame = calculate_event_frame(anim)
+            # 优先用 Trigger 事件帧（实测校准），退回 null 可见性，再退回比例
+            event_frame = calculate_trigger_frame(anim, events)
+            event_source = "trigger" if event_frame is not None else None
+            if event_frame is None:
+                event_frame = calculate_event_frame(anim)
+                event_source = "null" if event_frame is not None else None
 
             animations.append({
                 "name": name,
@@ -213,6 +280,7 @@ def parse_anm2(anm2_path):
                 "frame_num": frame_num,
                 "loop": loop,
                 "event_frame": event_frame,
+                "event_source": event_source,
             })
 
     except ET.ParseError as e:

@@ -520,3 +520,205 @@ do
     print(string.format('  规划器: 原因=%-24s 预测首碰撞=%s（旧代码 = -1 即“无威胁”） 输出=%s',
         tostring(st.decision.reason), tostring(m.nominalHit), u and dirName(u) or '不接管'))
 end
+
+-- ============================================================
+print()
+print('===== F8: 追踪炸弹（用户 2026-09-13 反馈 1）—— 爆圈是定时事件，不是永久禁区 =====')
+-- 真实回放数据：
+--   * session_20260913_220304 帧 225882（宝箱开出的 Megatroll Bomb，variant=4）：
+--     炸弹 (196.57,295.98) vel=(-0.98,-0.11)、玩家 (125.4,290.7)，
+--     距离 71px < 爆圈 90 + 玩家 10 → 已在爆圈内，实测挨了 100 伤害（dmg=100）。
+--   * session_20260911_000240 帧 17249~17251（同类追踪炸弹的长寿场景）：
+--     录像里 mod 先 2 帧 180° 反向猛推（dodge=(0.98,-0.20) 而玩家按左），
+--     之后 ~150 帧全是 budget_no_improving_action（一次都没介入）。
+-- 根因：EntityBomb 只有 SetExplosionCountdown，没有只读引信（IsaacDocs/rep/EntityBomb），
+--       旧实现 window() 退回 (0, math.huge) → 90px 爆圈被当成“立刻且永久”，所有候选都“在圈里”。
+do
+    local map = {
+        '###############', '#.............#', '#.............#', '#.............#',
+        '#.............#', '#.............#', '#.............#', '#.............#', '###############',
+    }
+    local room = makeRoom(map)
+    local cfg = Defaults.get(); cfg.budgetMs = 100000
+    local ter = Terrain.create(); ter:build(room, false, cfg)
+    local BX, BY, BVX, BVY = 196.57, 295.98, -0.98, -0.11
+    local PX, PY = 125.4, 290.7
+    local BASE = 225882
+    -- appearFrame/endFrame 是绝对帧号（回放时间轴）
+    local function bombHazard(appearFrame, endFrame)
+        return { id = 'bomb:24:1773849412', index = 24, seed = 1773849412, kind = 'bomb',
+            entityType = 4, variant = 4, pos = Vector(BX, BY), vel = Vector(BVX, BVY),
+            speed = math.sqrt(BVX * BVX + BVY * BVY), radius = 90, damage = 100,
+            appearFrame = appearFrame and (BASE + appearFrame) or nil,
+            endFrame = endFrame and (BASE + endFrame) or nil }
+    end
+    local function run(label, hazard, ix, iy)
+        local st = newState(cfg, PX, PY, 0, 0, ix, iy, false)
+        local u = plan(st, ter, { hazard }, BASE)
+        local m = st.decision.metrics or {}
+        print(string.format('  %-36s 原因=%-26s 首碰撞=%-5s 风险 %.1f→%.1f 输出=%s',
+            label, tostring(st.decision.reason), tostring(m.nominalHit),
+            m.nominalRisk or 0, m.selectedRisk or 0, u and dirName(u) or '不接管'))
+        return st, u
+    end
+    -- ① 旧行为：没有引信 → (0, math.huge) → 90px 永久禁区（玩家只要往炸弹那边走就被掰开）
+    run('旧(引信未知→永久爆圈) 玩家按左', bombHazard(nil, nil), -1, 0)
+    -- ② 新行为：引信估计 45 帧（Megatroll 1.5~2.5s 取下限）→ 离爆炸还早 → 不抢操作
+    run('新(预估 45 帧后炸)   玩家按左', bombHazard(45, 47), -1, 0)
+    -- ③ 新行为：快炸了（12 帧）+ 玩家站着不动 → 必须跑出爆圈
+    local st3, u3 = run('新(预估 12 帧后炸)   玩家不动', bombHazard(12, 14), 0, 0)
+    local m3 = st3.decision.metrics or {}
+    if m3.selectedEndX then
+        print(string.format('     选中终点 (%.1f,%.1f) 距炸弹 %.1fpx（爆圈 90+10=100）输出=%s',
+            m3.selectedEndX, m3.selectedEndY,
+            math.sqrt((m3.selectedEndX - BX) ^ 2 + (m3.selectedEndY - BY) ^ 2),
+            u3 and dirName(u3) or '不接管'))
+    end
+end
+
+-- ============================================================
+print()
+print('===== F9: Mother（妈腿）战 133px 站位的“规划器判安全”到底差多少 =====')
+-- 真实回放 session_20260913_223945：16 次 srcT=912 受击的（本体位置, 玩家位置, 玩家输入）配对。
+-- 本体 912:10 的 collisionRadius/Entity.Size = 110，玩家 10 → 接触圈 120。
+-- 8 次受击时规划器判 nominal_safe（站位 131~168px，刚好在 120 圈外一点点）。
+-- 这里用当帧真实坐标跑当前规划器：旧接触圈(110) vs 攻击期扩圈(110+48)。
+do
+    local map = {
+        '###############', '#.............#', '#.............#', '#.............#',
+        '#.............#', '#.............#', '#.............#', '#.............#', '###############',
+    }
+    local room = makeRoom(map)
+    local cfg = Defaults.get(); cfg.budgetMs = 200
+    local ter = Terrain.create(); ter:build(room, false, cfg)
+    local HITS = {
+        { 440, 362, 569.6, 393.6,  0,  0, 'nominal_safe' },
+        { 440, 248, 517.3, 318.6, -1,  0, 'disabled' },
+        { 320, 420, 147.8, 501.1, -1,  0, 'disabled' },
+        { 439, 363, 563.5, 397.8, -1, -1, 'disabled' },
+        { 320, 420, 452.2, 543.8, -1,  1, 'disabled' },
+        { 200, 645, 320.2, 690.8,  0,  0, 'budget_no_improving_action' },
+        { 440, 628, 569.9, 597.5, -1,  0, 'nominal_safe' },
+        { 200, 280,  70.0, 261.1, -1,  0, 'nominal_safe' },
+        { 320, 420, 143.1, 477.0,  1,  0, 'safe_evasion' },
+        { 200, 434,  74.8, 475.0,  1,  1, 'nominal_safe' },
+        { 320, 420, 223.0, 451.4,  1,  0, 'reduce_exposure' },
+        { 440, 606, 570.0, 575.3,  1, -1, 'nominal_safe' },
+        { 320, 420, 459.8, 427.7,  0,  1, 'nominal_safe' },
+        { 440, 503, 564.4, 550.4,  0, -1, 'nominal_safe' },
+        { 200, 350, 329.9, 329.8, -1, -1, 'reduce_exposure' },
+        { 320, 420, 454.4, 318.8,  0,  1, 'nominal_safe' },
+    }
+    local FRAME = 338462
+    -- endFrame: 真机里"攻击期扩圈"的窗口 = 动画剩余帧数（WristAttack 66 帧、起手时 66），
+    -- 旧接触圈（enemy 传感器）则是无期限的（敌人本体一直在那儿）。
+    local function entry(bx, by, radius, endFrame)
+        return { id = 'enemy:912:1', index = 10, seed = 1, kind = 'enemy', entityType = 912,
+            variant = 10, pos = Vector(bx, by), vel = Vector(0, 0), speed = 0,
+            radius = radius, damage = 1, confidence = 1, endFrame = endFrame }
+    end
+    local blindOld, blindNew, seenOld, seenNew, actedNew = 0, 0, 0, 0, 0
+    for i = 1, #HITS do
+        local h = HITS[i]
+        local stOld = newState(cfg, h[3], h[4], 0, 0, h[5], h[6], false)
+        local uOld = plan(stOld, ter, { entry(h[1], h[2], 110) }, FRAME)
+        local stNew = newState(cfg, h[3], h[4], 0, 0, h[5], h[6], false)
+        local uNew = plan(stNew, ter, { entry(h[1], h[2], 158, FRAME + 40) }, FRAME)
+        if stOld.decision.reason == 'nominal_safe' then blindOld = blindOld + 1 end
+        if stNew.decision.reason == 'nominal_safe' then blindNew = blindNew + 1 end
+        if (stOld.decision.metrics or {}).nominalHit then seenOld = seenOld + 1 end
+        if (stNew.decision.metrics or {}).nominalHit then seenNew = seenNew + 1 end
+        if uNew then actedNew = actedNew + 1 end
+        print(string.format('  #%2d 本体→玩家 %5.0fpx  旧(110): %-24s %-8s  新(158): %-24s %-8s',
+            i, math.sqrt((h[3] - h[1]) ^ 2 + (h[4] - h[2]) ^ 2),
+            tostring(stOld.decision.reason), uOld and dirName(uOld) or '不接管',
+            tostring(stNew.decision.reason), uNew and dirName(uNew) or '不接管'))
+    end
+    print(string.format('  合计: 判安全(盲区) 旧 %d → 新 %d；识别到危险(hit 预测) 旧 %d → 新 %d；新模型介入 %d',
+        blindOld, blindNew, seenOld, seenNew, actedNew))
+    print('  说明: 本体贴墙角落时 18 帧内跑不出 168px 圈 → no_improving_action（至少已经“看见了”，')
+    print('        不再是 nominal_safe）；开阔位置的逃逸方向会真的把玩家带出攻击范围。')
+
+    -- 真正的机制：砸击动画给出 46 帧前摇 → 落点锁在起手时的玩家位置，闭环跑一下就出圈
+    print()
+    print('  --- 瞄准型砸击闭环（WristAttackLeft：impact=第 46 帧、落点锁在起手玩家位置、半径 100）---')
+    local slam = { id = 'npc_attack:10050:1', index = 10050, seed = 1, kind = 'npc_attack',
+        pos = Vector(320, 300), vel = Vector(0, 0), speed = 0, radius = 100, damage = 1,
+        appearFrame = 46, endFrame = 66, aimLocked = true }
+    local st = newState(cfg, 320, 300, 0, 0, 0, 0, false)
+    local p, v = Vector(320, 300), Vector(0, 0)
+    local W = cfg.maxDodgeWeight or 0.85
+    local frames, dirs = 0, {}
+    for frame = 0, 45 do
+        st.player.position = Vector(p.X, p.Y); st.player.velocity = Vector(v.X, v.Y)
+        local u = plan(st, ter, { slam }, frame)
+        if u then dirs[#dirs + 1] = dirName(u) end
+        local mix = u and u * W or Vector(0, 0)
+        v = Vector(0.75 * v.X + 1.5 * mix.X, 0.75 * v.Y + 1.5 * mix.Y)
+        p = p + v
+        frames = frames + 1
+    end
+    print(string.format('    46 帧后玩家离落点 %.1fpx（爆圈 100+10=110），期间 AI 方向 %d 次，末次=%s',
+        p:Distance(Vector(320, 300)), #dirs, #dirs > 0 and dirs[#dirs] or '不接管'))
+end
+
+-- ============================================================
+print()
+print('===== F8b: 追踪炸弹闭环 —— “等快爆炸再跑” vs “从现在就开始拉开距离” =====')
+-- 用户 2026-09-13 补充：那种追着你跑、然后自爆的炸弹，站着等它快爆炸再跑是跑不开的
+-- （它会一直跟着你，玩家速度有限）。
+-- 炸弹运动按回放 bomb:655（session_20260911_000240）实测轮廓：朝玩家扑过来（峰值 10px/帧、
+-- 直线扑、不会中途拐弯），贴到 ~45px 就停下来等着炸；玩家最快 ~6px/帧。
+-- 关键差别在于“引信只能估”：默认引信从“第一次看到这颗炸弹”起算，而第一眼看到时它
+-- 可能已经点着了一段时间（房间切换 / 屏幕外生成 / 追踪炸弹引信本身随机 1.5~2.5s）——
+-- 只按估出来的爆炸帧躲会晚。下面的场景就是：真实爆炸在 18 帧后，估算写在 39 帧后。
+do
+    local map = {
+        '###############', '#.............#', '#.............#', '#.............#',
+        '#.............#', '#.............#', '#.............#', '#.............#', '###############',
+    }
+    local room = makeRoom(map)
+    local cfg = Defaults.get(); cfg.budgetMs = 100000
+    local ter = Terrain.create(); ter:build(room, false, cfg)
+    local W = cfg.maxDodgeWeight or 0.85
+    local BLAST, EST = 18, 39        -- 真实爆炸帧 / 插件估算爆炸帧（首次看到 + 45 - 6）
+    local STOP, CLEAR = 45, 100      -- 扑到离“起扑点”45px 停下；判定线 = 爆圈 90 + 玩家 10
+
+    local function simulate(liveNow)
+        local p, v = Vector(320, 300), Vector(0, 0)
+        local bomb = Vector(320 - 150, 300)
+        local target = Vector(320, 300)   -- 起扑时锁定的落点（扑出去就不拐弯）
+        local st = newState(cfg, p.X, p.Y, 0, 0, 0, 0, false)
+        local firstAct
+        for frame = 0, BLAST do
+            -- 炸弹：朝锁定的落点直线扑，离落点 45px 处停下（回放 bomb:655 的落点是玩家当时的位置）
+            local dx, dy = target.X - bomb.X, target.Y - bomb.Y
+            local dist = math.max(0.001, math.sqrt(dx * dx + dy * dy))
+            local speed = math.max(0, math.min(10, (dist - STOP) / 8))
+            local step = Vector(dx / dist * speed, dy / dist * speed)
+            bomb = bomb + step
+            local hazard = { id = 'bomb:655:1', index = 24, kind = 'bomb', entityType = 4, variant = 4,
+                pos = bomb, vel = step, speed = speed,
+                radius = 90, damage = 100, chasing = liveNow,
+                -- 传感器在“判定在追我”那一帧锁定的玩家位置（future_motion 用它做“到位就停”外推）
+                chaseTargetX = liveNow and p.X or nil, chaseTargetY = liveNow and p.Y or nil,
+                appearFrame = liveNow and frame or EST, endFrame = (liveNow and EST or EST) + 2 }
+            st.player.position = Vector(p.X, p.Y); st.player.velocity = Vector(v.X, v.Y)
+            local u = plan(st, ter, { hazard }, frame)
+            if u and not firstAct then firstAct = frame end
+            local mix = u and u * W or Vector(0, 0)
+            v = Vector(0.75 * v.X + 1.5 * mix.X, 0.75 * v.Y + 1.5 * mix.Y)
+            p = p + v
+            if frame == BLAST then return p:Distance(bomb), firstAct end
+        end
+        return p:Distance(bomb), firstAct
+    end
+
+    local dTimed, actTimed = simulate(false)
+    local dLive, actLive = simulate(true)
+    print(string.format('  只盖估算爆炸帧（等快炸再跑）: 首次出手 = 第 %s 帧，爆炸时距炸弹 %6.1fpx → %s',
+        tostring(actTimed), dTimed, dTimed >= CLEAR and '刚好躲开' or '**被炸到**'))
+    print(string.format('  追踪中就一直危险（现在就拉开）: 首次出手 = 第 %s 帧，爆炸时距炸弹 %6.1fpx → %s',
+        tostring(actLive), dLive, dLive >= CLEAR and '躲开了' or '**被炸到**'))
+    print(string.format('  （判定线 %.0fpx = 爆圈 90 + 玩家 10；场地 640x280，玩家最快 ~6px/帧）', CLEAR))
+end

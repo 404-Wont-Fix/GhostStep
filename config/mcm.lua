@@ -31,6 +31,14 @@ local SETTINGS = {
     { "危险源", "hazardContact",      "bool",  true, "躲避敌人接触伤害" },
     { "危险源", "hazardLasers",       "bool",  true, "躲避激光 (Phase 3)" },
     { "危险源", "hazardBombs",       "bool",  true, "躲避炸弹爆炸 (Phase 3)" },
+    -- 用户 2026-09-13 要求：这一类（追着你跑、然后自爆的炸弹）单独一个开关，
+    -- 觉得“追着跑时被拽得太凶”可以直接关掉。
+    { "危险源", "dodgeChasingBombs", "bool",  true,
+      "追踪炸弹（追着你跑、然后自爆的那一类，即巨魔炸弹家族）单独开关："
+      .. "开启 = 判定它在追你就从现在开始躲（不再等快爆炸才跑）；"
+      .. "关闭 = 完全不处理这一类（不采集、不躲，也不会套普通炸弹的机制），请自己手动处理。"
+      .. "普通炸弹和玩家自己扔的炸弹不受影响。",
+      "躲避追踪炸弹（追着你跑的炸弹）" },
     { "危险源", "hazardCreep",       "bool",  true, "躲避水坑/火焰 (Phase 3)" },
     { "危险源", "hazardNpcAttacks",  "bool",  true, "躲避NPC攻击前兆 (Phase 3)" },
     { "危险源", "hazardSpikes",      "bool",  true, "躲避地刺" },
@@ -172,7 +180,7 @@ local function onChange(attr, value)
     MCM.saveSettings()
 end
 
-local function addBoolean(sub, attr, default, info)
+local function addBoolean(sub, attr, default, info, label)
     ModConfigMenu.AddSetting(CAT, sub, {
         Type = ModConfigMenu.OptionType.BOOLEAN,
         CurrentSetting = function()
@@ -180,7 +188,8 @@ local function addBoolean(sub, attr, default, info)
         end,
         Display = function()
             local on = stateRef.config[attr]
-            return attr .. ": " .. (on and "开启" or "关闭")
+            -- label 可选：给了就显示中文名（老条目仍显示属性名，保持菜单原样）
+            return (label or attr) .. ": " .. (on and "开启" or "关闭")
         end,
         OnChange = function(v) onChange(attr, v) end,
         Info = { info },
@@ -280,7 +289,7 @@ function MCM.register(deps)
         local s = SETTINGS[i]
         local sub, attr, typ, default = s[1], s[2], s[3], s[4]
         if typ == "bool" then
-            addBoolean(sub, attr, default, s[5])
+            addBoolean(sub, attr, default, s[5], s[6])
         elseif typ == "number" then
             addNumber(sub, attr, default, s)
         elseif typ == "scroll" then

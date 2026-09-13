@@ -69,7 +69,10 @@ function G.prepare(e,frame,horizon)
     local age=math.max(0,frame-(e.lastFrame or frame))
     c.start,c.ending=G.window(e,frame)
     c.radius=(e.radius or 0)+(e.uncertainty or 0)
-    c.linear=e.kind~="laser" and not e.hopOn and not ((e.kind or "projectile")=="projectile"
+    -- 追踪炸弹必须走非线性路径（Future.pos 里有“到玩家就停”的夹位），否则会按自报速度
+    -- 线性外推冲过头（见 future_motion 里的说明）。
+    c.linear=e.kind~="laser" and not e.hopOn and not e.chasing
+        and not ((e.kind or "projectile")=="projectile"
         and ((e.historyCount or 0)>=3) and (Predict.isCurved(e) or Predict.isTracking(e) or Predict.isParabolic(e)))
     if c.linear then
         c.x,c.y=e.pos.X+e.vel.X*age,e.pos.Y+e.vel.Y*age

@@ -171,6 +171,24 @@ function FutureMotion.pos(entry, t, frame)
         return entry.pos + entry.vel * t
     end
 
+    -- 追踪炸弹（追着玩家跑、然后自爆）: 朝“锁定玩家位置”逼近，到位就停，**不会飞过头**。
+    -- 为什么必须夹住：直接按自报速度线性外推时，冲刺型追踪炸弹会被预测到玩家身后很远
+    -- （回放 bomb:655 以 10px/帧 扑过来、贴到 ~45px 就停），于是规划器看到的禁区在身后，
+    -- 反而往炸弹那边走（离线闭环复现：爆炸时距离从 45px 掉到 27.8px）。
+    -- chaseTargetX/Y = 传感器在判定“在追我”那一帧锁定的玩家位置。
+    if entry.chasing and entry.chaseTargetX then
+        local sx, sy = entry.pos.X, entry.pos.Y
+        local dx, dy = entry.chaseTargetX - sx, entry.chaseTargetY - sy
+        local dist = math.sqrt(dx * dx + dy * dy)
+        local speed = entry.speed or 0
+        if dist > 0.001 and speed > 0 then
+            local travel = speed * t
+            if travel > dist then travel = dist end
+            return Vector(sx + dx / dist * travel, sy + dy / dist * travel)
+        end
+        return Vector(sx, sy)
+    end
+
     -- 跳跃型敌人（Trite=跳蛛 等）: 地面待跳 → 直线跳到“玩家当前所在”（跳距 clamp 到观测范围）
     -- → 落地后停在落点。模型依据：跳蛛瞄准起跳瞬间玩家所在、跳距随玩家距离变化，
     -- 节奏固定（entities/hop_tracker.lua 里按实测速度/位置标定）。

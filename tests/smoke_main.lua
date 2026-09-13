@@ -798,21 +798,124 @@ check("laser sensor filters hostile vs friendly", function()
     SMOKE.entities = {}
 end)
 
-check("bomb sensor keeps unknown fuse as explicitly unknown", function()
+check("bomb sensor estimates a finite fuse when the engine fuse is unreadable", function()
     local trk = Tracker.create()
-    -- 玩家炸弹跳过
+    -- 引擎侧（IsaacDocs/rep/EntityBomb）：只有 SetExplosionCountdown，没有只读引信。
+    -- 旧实现读不到就留 fuseFrames=nil → threat/geometry.window() 返回 (0, math.huge)，
+    -- 90px 爆圈被当成"立刻且永久"的禁区 → 所有候选都判在爆圈里 → 搜索完不成、方向乱翻。
+    -- 现在的契约：引信仍然明确标记为"非引擎实测"，但窗口必须有限。
     SMOKE.entities = {
         { Type = 4, Index = 810, Position = Vector(50, 0), Velocity = Vector(0, 0),
           Size = 10, SpawnerType = 0, FrameCount = 150, -- 已到危险时间
           IsDead = function() return false end },
         { Type = 4, Index = 811, Position = Vector(60, 0), Velocity = Vector(0, 0),
-          Size = 10, SpawnerType = 0, FrameCount = 50, -- 还早
+          Size = 10, SpawnerType = 0, Variant = 4, -- Megatroll Bomb（追着玩家跑）
           IsDead = function() return false end },
     }
-    BombSensor.collect(nil, trk, 10, { hazardBombs = true })
+    local cfg = { hazardBombs = true, bombFuseFrames = 90, bombTrollFuseFrames = 45,
+        bombFuseSafetyLead = 6, bombFuseStaleLead = 6 }
+    BombSensor.collect(nil, trk, 10, cfg)
     assert(trk.count == 2, "both bombs tracked; fuse availability explicit")
-    assert(trk.tracked[810], "mature bomb tracked")
-    assert(trk.tracked[811].timingKnown==false and trk.tracked[811].fuseFrames==nil, "FrameCount cannot establish fuse time")
+    local plain, troll = trk.tracked[810], trk.tracked[811]
+    assert(plain.timingKnown == false and plain.fuseSource == 'variant',
+        "engine fuse is still explicitly unknown, estimate is marked as such")
+    assert(plain.appearFrame == 10 + 90 - 6 and plain.endFrame == plain.appearFrame + 2,
+        "plain bomb: finite blast window from the default fuse, got " .. tostring(plain.appearFrame))
+    assert(troll.appearFrame == 10 + 45 - 6,
+        "troll/megatroll keep the shorter 1.5~2.5s fuse (wiki minimum), got " .. tostring(troll.appearFrame))
+    -- 第二帧：窗口必须跟着"第一次看到"的帧倒计时，而不是每帧重新武装（否则又变永久禁区）
+    BombSensor.collect(nil, trk, 40, cfg)
+    assert(trk.tracked[810].appearFrame == 94, "fuse counts down from first sight")
+    -- 预估已过期但炸弹还在 → 短窗口重新武装，仍然有限
+    BombSensor.collect(nil, trk, 200, cfg)
+    local stale = trk.tracked[810]
+    assert(stale.fuseSource == 'stale' and stale.appearFrame == 206,
+        "stale estimate re-arms with a short lead, got " .. tostring(stale.appearFrame))
+    assert(stale.endFrame < math.huge, "blast window must never be unbounded")
+    SMOKE.entities = {}
+end)
+
+check("chasing bomb is live now (waiting for the blast is not an option)", function()
+    -- 用户 2026-09-13 补充：“那种会追着你跑、然后自爆的炸弹，你站在原地等等、它要爆炸再跑
+    -- 是跑不开的，它会一直跟着你，玩家速度也是有限的”。
+    -- 回放 session_20260911_000240 bomb:655：追踪炸弹以 10px/帧 扑向玩家（玩家 3~4px/帧），
+    -- 扑完停在离玩家 ~45px 处等着炸 → 近身的巨魔炸弹必须从现在就开始躲。
+    local cfg = require("config/defaults").get()
+    local function bomb(idx, variant, x, vx, spawner)
+        return { Type = 4, Index = idx, Variant = variant, Position = Vector(x, 300),
+            Velocity = Vector(vx, 0), Size = 10, SpawnerType = spawner or 0,
+            IsDead = function() return false end }
+    end
+    local trk = Tracker.create()
+    SMOKE.entities = {
+        bomb(812, 4, 240, 10),   -- 追踪中：10px/帧 朝玩家扑
+        bomb(813, 4, 240, 0),    -- 巨魔炸弹停住歇气、离玩家 80px（近身 → 也算"现在就得躲"）
+        bomb(814, 4, 60, 0),     -- 巨魔炸弹停在远处（260px > 爆圈+40）→ 走定时窗口
+        bomb(815, 0, 240, 0),    -- 玩家自己的普通炸弹停着（不该被拖着躲）
+        bomb(816, 0, 240, -10, 1), -- 玩家扔出去飞走的炸弹（背对玩家 → 不算追踪）
+    }
+    -- main.lua 就是传 state.player 进来的（PlayerSensor 先跑，position 已刷新）
+    BombSensor.collect({ position = Vector(320, 300) }, trk, 500, cfg)
+    local chaser, parkedNear, parkedFar, ownBomb, thrown = trk.tracked[812], trk.tracked[813],
+        trk.tracked[814], trk.tracked[815], trk.tracked[816]
+    assert(chaser.chasing == true, "a bomb moving at the player must be flagged")
+    assert(chaser.appearFrame == 500, "a chasing bomb must be dangerous immediately, got " .. tostring(chaser.appearFrame))
+    assert(chaser.endFrame > chaser.appearFrame, "but the window must still end (estimated blast)")
+    assert(parkedNear.chasing == true,
+        "a troll bomb resting next to the player must stay live (random fuse + leap again)")
+    assert(parkedFar.chasing == false and parkedFar.appearFrame == 500 + cfg.bombTrollFuseFrames - cfg.bombFuseSafetyLead,
+        "a parked troll bomb far away keeps the timed window, got " .. tostring(parkedFar.appearFrame))
+    assert(ownBomb.chasing == false, "the player's own parked bomb must not drag the player around")
+    assert(ownBomb.appearFrame == 500 + cfg.bombFuseFrames - cfg.bombFuseSafetyLead,
+        "own bomb keeps the timed window (pass by freely, step out when it is about to blow), got "
+        .. tostring(ownBomb.appearFrame))
+    assert(thrown.chasing == false, "a bomb flying away from the player is not chasing")
+    -- MCM 单独开关（危险源 → 躲避追踪炸弹）：关闭 = **完全不处理这一类**。
+    -- 用户 2026-09-13 明确要求：“关掉那就不处理，普通炸弹的躲避机制也不用套上去，
+    -- 否则跟没关没区别”——所以关闭时这些炸弹连采集都不做（不会退化成普通炸弹再躲一遍）。
+    local cfgOff = require("config/defaults").get()
+    cfgOff.dodgeChasingBombs = false
+    local trkOff = Tracker.create()
+    SMOKE.entities = {
+        bomb(817, 4, 240, 10),   -- 追踪中（巨魔炸弹家族）
+        bomb(818, 4, 240, 0),    -- 近身停着的巨魔炸弹
+        bomb(819, 0, 240, 0),    -- 普通炸弹（必须仍然被采集/躲避）
+    }
+    BombSensor.collect({ position = Vector(320, 300) }, trkOff, 500, cfgOff)
+    assert(trkOff.tracked[817] == nil and trkOff.tracked[818] == nil,
+        "switch off must drop the whole chasing-bomb category, not fall back to plain bombs")
+    local plain = trkOff.tracked[819]
+    assert(plain and plain.chasing ~= true, "ordinary bombs must still be collected and dodged")
+    assert(plain.appearFrame == 500 + cfgOff.bombFuseFrames - cfgOff.bombFuseSafetyLead,
+        "ordinary bomb keeps the timed window, got " .. tostring(plain.appearFrame))
+    SMOKE.entities = {}
+end)
+
+check("chasing-bomb toggle is a real MCM setting (kind/type/default must line up)", function()
+    -- 用户 2026-09-13 要求：这一类躲避要能在设置里单独关掉。
+    -- MCM 的 SETTINGS 表是唯一真相源：属性名必须存在于 config/defaults.lua，
+    -- 否则 saveSettings/loadSettings 会静默丢字段（菜单点了没反应）。
+    local chunk = io.open("config/mcm.lua") or io.open(mod_root .. "/config/mcm.lua")
+    assert(chunk, "config/mcm.lua must be readable for the wiring check")
+    local src = chunk:read("*a"); chunk:close()
+    assert(string.find(src, "dodgeChasingBombs", 1, true),
+        "the per-category switch must be registered in MCM SETTINGS")
+    assert(string.find(src, '"危险源", "dodgeChasingBombs", "bool"', 1, true),
+        "it must be a boolean under the hazard category")
+    local cfg = require("config/defaults").get()
+    assert(cfg.dodgeChasingBombs == true, "default must be on (current behaviour)")
+    -- MCM 的持久化只保存 SETTINGS 里的属性；键存在才能被存/读回来
+    assert(type(cfg.dodgeChasingBombs) == "boolean", "config key must be a boolean")
+    -- 关掉时必须真的改变采集结果（不是只改菜单文本）：这一类整类不再进追踪器
+    local cfgOff = require("config/defaults").get(); cfgOff.dodgeChasingBombs = false
+    SMOKE.entities = {
+        { Type = 4, Index = 820, Variant = 4, Position = Vector(240, 300), Velocity = Vector(10, 0),
+          Size = 10, SpawnerType = 0, IsDead = function() return false end },
+    }
+    local trk = Tracker.create()
+    BombSensor.collect({ position = Vector(320, 300) }, trk, 500, cfgOff)
+    assert(trk.count == 0 and trk.tracked[820] == nil,
+        "switch off must ignore the whole category (count=" .. trk.count .. ")")
     SMOKE.entities = {}
 end)
 
@@ -932,6 +1035,88 @@ check("npc_attack windup countdown entry has fuseFrames and appearFrame", functi
     assert(entry.fuseFrames == 8, "fuseFrames=11-3=8, got " .. tostring(entry.fuseFrames))
     assert(entry.appearFrame == 28, "appearFrame=20+8=28, got " .. tostring(entry.appearFrame))
     assert(entry.radius == 62, "Mom's Hand radius=62, got " .. tostring(entry.radius))
+    SMOKE.entities = {}
+end)
+
+-- ===== 用户 2026-09-13 反馈 2：Mother（妈腿）战老是吃伤害 =====
+-- 回放 session_20260913_223945（Mother 战，17 次受击）：
+--   * 她的 wristattack/scrapeattack/groundpound/swipe 全部落进 anim_missing
+--     （旧动画库没有这些关键字）→ 完全没有预判；
+--   * 8 次受击规划器判 nominal_safe，而玩家站位离她中心 128~140px
+--     （本体 Size=110 + 玩家 10 = 120 的接触圈差 8~20px）。
+check("Mother wrist attack becomes an aimed slam threat locked at windup start", function()
+    local origGetPlayer = Isaac.GetPlayer
+    Isaac.GetPlayer = function() return { Position = Vector(200, 0) } end
+    local trk = Tracker.create()
+    SMOKE.entities = {
+        mockNpcAttack({ Type = 912, Variant = 0, Index = 50, Position = Vector(0, 0), Size = 110,
+            GetSprite = function() return {
+                GetAnimation = function() return "WristAttackLeft" end,
+                GetFrame = function() return 0 end,
+            } end }),
+    }
+    NpcAttackSensor.resetRoom()
+    local cfg = require("config/defaults").get()  -- 真默认配置：bossAttackReach 等由 config/defaults.lua 唯一提供
+    NpcAttackSensor.collect(nil, trk, 100, cfg)
+    local entry = trk.tracked[10050]
+    assert(entry, "wrist attack must produce a threat (Mother 912:0 is in the regenerated animdb)")
+    assert(entry.kind == "npc_attack", "kind=" .. tostring(entry.kind))
+    assert(entry.rule == "912:0:WristAttackLeft", "rule=" .. tostring(entry.rule))
+    -- 落点 = 起手帧的玩家位置（不是她自己的位置，也不是每帧重算的当前玩家位置）
+    assert(entry.pos.X == 200 and entry.pos.Y == 0, "aim must lock onto the player's start position")
+    assert(entry.aimLocked == true, "aim lock must be flagged for replay attribution")
+    -- 冲击帧 = anm2 的 Shoot Trigger（WristAttackLeft = 第 46 帧），不再是 0.45 拍脑袋比例
+    assert(entry.appearFrame == 146, "impact at 100+46, got " .. tostring(entry.appearFrame))
+    assert(entry.radius == 100, "slam radius for 912 = 100, got " .. tostring(entry.radius))
+    -- 近战类除了精确落点，还会再给一份"攻击期扩圈"兜底：她的手在 anm2 里左右各摊到 ±206px，
+    -- 玩家走动后可能又落回手部范围（实测挨打距离 128~140px）→ 两个模型合起来才盖得上
+    local guard = trk.tracked[20050]
+    assert(guard and guard.radius == 110 + cfg.bossAttackReach,
+        "slam animations must also widen the body guard, got " .. tostring(guard and guard.radius))
+    assert(guard.unknownAttack == true, "guard entry must be flagged for replay attribution")
+    -- 下一帧玩家跑远了：落点必须还是起手那个点
+    -- （每帧重算 = 禁区跟着玩家跑，玩家永远逃不掉）
+    Isaac.GetPlayer = function() return { Position = Vector(200, 120) } end
+    NpcAttackSensor.collect(nil, trk, 101, cfg)
+    local same = trk.tracked[10050]
+    assert(same and same.pos.X == 200 and same.pos.Y == 0,
+        "the impact point must not follow the player after the windup starts")
+    Isaac.GetPlayer = origGetPlayer
+end)
+
+check("big enemy with an unmodelled attack animation widens its danger radius", function()
+    local cfg = require("config/defaults").get()
+    local trk = Tracker.create()
+    -- Mother 本体（Size=110）播一个库里没有的攻击动画 → 至少要按 110+48 的禁区算
+    SMOKE.entities = {
+        mockNpcAttack({ Type = 9990, Index = 60, Position = Vector(300, 200), Size = 110,
+            GetSprite = function() return {
+                GetAnimation = function() return "SomeUnknownSmash" end,
+                GetFrame = function() return 0 end,
+            } end }),
+    }
+    NpcAttackSensor.resetRoom()
+    NpcAttackSensor.collect(nil, trk, 30, cfg)
+    local wide = trk.tracked[20060]
+    assert(wide, "unknown attack animation from a big enemy must still produce a guard")
+    assert(wide.radius == 110 + cfg.bossAttackReach,
+        "110 + reach, got " .. tostring(wide.radius))
+    assert(wide.unknownAttack == true, "must be flagged so replay can find it")
+    local evs = NpcAttackSensor.takeEvents()
+    assert(#evs == 1 and evs[1].ev == "anim_missing", "the db gap must still be reported")
+    -- 杂兵（Size 13）不扩圈，避免围着一堆小怪乱躲
+    trk = Tracker.create()
+    SMOKE.entities = {
+        mockNpcAttack({ Type = 9991, Index = 61, Position = Vector(300, 200), Size = 13,
+            GetSprite = function() return {
+                GetAnimation = function() return "SomeUnknownSmash" end,
+                GetFrame = function() return 0 end,
+            } end }),
+    }
+    NpcAttackSensor.resetRoom()
+    NpcAttackSensor.collect(nil, trk, 30, cfg)
+    assert(trk.count == 0, "small enemies must not get the reach bump, count=" .. trk.count)
+    NpcAttackSensor.takeEvents() -- 排空事件缓冲，不污染后面的测试
     SMOKE.entities = {}
 end)
 
